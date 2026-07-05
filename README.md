@@ -89,6 +89,8 @@ The `device_token` is persisted to NVS on first pairing; later wakes go straight
 
 ## Build & flash
 
+> **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.**
+> 
 Requires **ESP-IDF v5.4.x**.
 
 ```sh
@@ -112,7 +114,7 @@ cc firmware/test/test_provision_form.c firmware/main/provision_form.c -Ifirmware
 cc firmware/test/test_fb2bpp.c         firmware/main/fb2bpp.c         -Ifirmware/main -o /tmp/t && /tmp/t
 ```
 
-> **Back up the stock firmware before flashing.** 
+> **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.** 
 
 ## Provisioning
 
