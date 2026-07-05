@@ -1,0 +1,27 @@
+CONFIG_IDF_TARGET="esp32c3"
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# PicPak power is marginal: WiFi radio current spikes dip Vdd into brownout.
+# Keep the brownout detector ON (safety), but buy headroom by running the CPU at
+# 80 MHz (much lower baseline current; WiFi works fine) and use the most tolerant
+# brownout threshold so brief transients don't trigger a reset.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+CONFIG_ESP_BROWNOUT_DET=y
+CONFIG_ESP_BROWNOUT_DET_LVL_SEL_7=y
+# Low-power WiFi profile for the marginal PicPak rail.
+# Cap PHY TX power at BUILD time: this governs the init/calibration current
+# spike (the `enable_tsf` brownout moment), which the runtime
+# esp_wifi_set_max_tx_power() does NOT reach. 8 dBm still connects at normal
+# home range. (10 dBm is the minimum this setting allows.)
+CONFIG_ESP_PHY_MAX_WIFI_TX_POWER=10
+# Trim the WiFi subsystem footprint (a 30 KB fetch needs very little).
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=4
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=8
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=n
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=n
