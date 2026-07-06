@@ -10,7 +10,8 @@ Modelled on Tesserae's battery-native reference client
 but retargeted to the PicPak's hardware: a smaller 4-colour panel, an ESP32-C3 (RISC-V) instead of an
 S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame format.
 
-> **Status:** experimental, working end-to-end over REST on real hardware. `FW_VERSION 0.1.0-dev`.
+> **Status:** experimental, working end-to-end over REST on real hardware. `FW_VERSION 0.2.0-dev`.
+> See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 
 ## Hardware
 
@@ -59,7 +60,7 @@ Posted at the end of every wake to `/api/v1/device/<id>/status`:
   "battery_pct": 96,
   "rssi": -63,
   "ip": "10.0.20.40",
-  "fw_version": "0.1.0-dev",
+  "fw_version": "0.2.0-dev",
   "kind": "picpak_client",
   "panel_w": 400,
   "panel_h": 300,
@@ -79,8 +80,8 @@ Every wake hits `/api/v1/device/<id>/...` over plain HTTP:
 
 | Method + path | Purpose |
 | --- | --- |
-| `POST /device/discover` | Unauthenticated. Posts identity (`device_id` = `picpak-<mac3>`, `kind`, `panel_w/h`, `fw_version`). `registered:false` → deep-sleep + retry next wake; `registered:true` → returns `device_token`. Default first-boot path. |
-| `POST /device/register` | Opt-in: same body + `X-Pairing-Code` header (from the portal's optional Pairing-code field). Returns `device_token`. |
+| `POST /device/discover` | Unauthenticated. Posts identity (`device_id`, `kind`, `panel_w/h`, `fw_version`, `mac`). `device_id` is the portal's custom **Device id**, or `picpak-<mac3>` when left blank. `registered:false` → deep-sleep + retry next wake; `registered:true` → returns `device_token`. Default first-boot path. |
+| `POST /device/register` | Opt-in: same body + `X-Pairing-Code` header (from the portal's optional Pairing-code field). Returns `device_token` (server auto-claims — no admin click). `403` clears the code and backs off; the code is single-use and burned on success. |
 | `GET /device/<id>/frame` | `Authorization: Bearer <device_token>` + optional `If-None-Match`. `200` → `{url, format, panel_w, panel_h}` + `ETag` (fetch `url`, paint); `304` → skip; `204` → not rendered yet. |
 | `POST /device/<id>/status` | `Bearer` auth. Body = the heartbeat JSON. Response `{config, next_poll_s, server_time}` — firmware applies `config.sleep_interval_s` to NVS and uses `next_poll_s` for this cycle's deep sleep. |
 
@@ -100,21 +101,12 @@ idf.py build
 idf.py -p /dev/cu.usbmodemxxxx flash monitor
 ```
 
+> **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.** 
+
 `secrets.h` is optional: `firmware/main/defaults.h` includes it via `__has_include`,
 so the firmware **builds and boots without it** (empty WiFi/server defaults → it comes up in the
 captive portal). Copy `firmware/main/secrets.example.h` → `secrets.h` only if you want to bake in dev
 credentials.
-
-Host-side unit tests (no hardware) for the pure logic:
-
-```sh
-cc firmware/test/test_battpct.c        -Ifirmware/main -o /tmp/t && /tmp/t
-cc firmware/test/test_lowbatt.c        -Ifirmware/main -o /tmp/t && /tmp/t
-cc firmware/test/test_provision_form.c firmware/main/provision_form.c -Ifirmware/main -o /tmp/t && /tmp/t
-cc firmware/test/test_fb2bpp.c         firmware/main/fb2bpp.c         -Ifirmware/main -o /tmp/t && /tmp/t
-```
-
-> **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.** 
 
 ## Provisioning
 
@@ -125,9 +117,18 @@ recompiling. Two triggers:
 - **Hold the button ~20 s at wake** → portal (deliberate re-provision). A quick tap just wakes.
 
 The AP is **`Tesserae-Setup`** (password `tesserae`, IP `192.168.4.1`); a DNS-hijack pops the captive
-sheet on your phone. Fill in WiFi + the Tesserae server URL (either the IP or `<host>.local:8765` —
-the C3 resolves `.local` via mDNS), Save, and it reboots into the normal cycle. Credentials precedence
-is `NVS → secrets.h → empty`.
+sheet on your phone. Fill in:
+
+- **WiFi** network + password.
+- **Server URL** — the Tesserae server, either its LAN IP or `<host>.local:8765` (the C3 resolves
+  `.local` via mDNS). Use the LAN IP so it keeps working if your internet drops.
+- **Device id** *(optional)* — a custom name (`picpak-1`, validated `^[a-z][a-z0-9_-]{1,31}$`); blank
+  auto-derives `picpak-<mac>`. This is the id the device claims and shows in Tesserae.
+- **Pairing code** *(optional)* — a 6-digit code from Tesserae's **Pair new device** to self-claim
+  without an admin click; blank uses the discovery flow (admin clicks **Register**).
+
+Save, and it reboots into the normal cycle. Credentials precedence is `NVS → secrets.h → empty`.
+On the LAN the frame advertises its DHCP hostname as **`tesserae-picpak`** (not the default `espressif`).
 
 ## Splash screens
 
@@ -171,12 +172,9 @@ picpak-tesserae-client/
 │       ├── image_fetcher.{c,h}  # HTTP frame download
 │       ├── rest_handler.{c,h}   # discover/register + frame GET + status POST
 │       └── heartbeat.{c,h}      # battery / RSSI / IP / panel JSON
-├── server-plugin/              # Tesserae renderer (esp32_bwry_bin) + device (picpak_client)
 └── tools/
     ├── gen_splash.py           # generate the 2 bpp splash blobs
-    └── mock_server.py          # tiny local Tesserae stand-in for dev
 ```
-
 ## Credits
 
 The wake state machine, REST/heartbeat contract, captive-portal provisioning, and NVS schema follow
