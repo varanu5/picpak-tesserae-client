@@ -85,6 +85,7 @@ void config_set_wifi(const char *ssid, const char *pass) {
 }
 void config_set_server_url(const char *url) { nvs_set_str_commit(NS_REST, "server_url", url); }
 void config_set_pairing_code(const char *code) { nvs_set_str_commit(NS_REST, "pair_code", code ? code : ""); }
+void config_get_pairing_code(char *out, size_t out_sz) { nvs_get_str_or_empty(NS_REST, "pair_code", out, out_sz); }
 void config_set_mqtt(const char *uri, const char *user, const char *pass) {
     if (uri)  nvs_set_str_commit(NS_REST, "mqtt_uri",  uri);
     if (user) nvs_set_str_commit(NS_REST, "mqtt_user", user);

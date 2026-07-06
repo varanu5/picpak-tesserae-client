@@ -19,7 +19,7 @@
 #endif
 
 #ifndef FW_VERSION
-#define FW_VERSION          "0.1.0-dev"
+#define FW_VERSION          "0.2.0-dev"
 #endif
 #define DEVICE_KIND         "picpak_client"
 
@@ -28,8 +28,17 @@
 // While waiting for the admin to claim this device in the Tesserae UI, retry
 // discover on this cadence (server also suggests one via retry_after_s).
 #define REST_DISCOVER_RETRY_S      30
+// Pairing rejected (bad/expired code -> 403) or rate-limited (429): back off
+// hard so a wrong code doesn't hammer /register every 30s. One hour matches the
+// reference firmware's deep-sleep-on-403 behaviour.
+#define REST_PAIR_REJECT_RETRY_S   3600
 #define SLEEP_INTERVAL_MIN_S       30
 #define SLEEP_INTERVAL_MAX_S       (7 * 24 * 60 * 60)
+
+// DHCP hostname advertised to the router when we join as a STA (client).
+// ESP-IDF defaults this to "espressif"; override so the frame is identifiable
+// in the router's client list.
+#define WIFI_HOSTNAME              "tesserae-picpak"
 
 // WiFi connect tuning.
 #define WIFI_CONNECT_RETRIES       5

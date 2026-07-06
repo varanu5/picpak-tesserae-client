@@ -35,6 +35,7 @@ void config_set_server_url(const char *url);
 void config_set_transport(uint8_t mode);                    // 0=MQTT, 1=REST
 uint8_t config_get_transport(uint8_t fallback);
 void config_set_pairing_code(const char *code);
+void config_get_pairing_code(char *out, size_t out_sz);   // empty if none set
 void config_set_mqtt(const char *uri, const char *user, const char *pass);  // inert until M5
 void config_set_paired_pending(bool pending);
 bool config_take_paired_pending(void);   // returns flag, then clears it (one-shot)

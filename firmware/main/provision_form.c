@@ -63,6 +63,24 @@ bool provform_field(const char *body, const char *key, char *dst, size_t dst_sz)
     return false;
 }
 
+// Validate device id: ^[a-z][a-z0-9_-]{1,31}$ (matches the form's HTML pattern
+// and the Tesserae server's device_id rules). Empty is invalid here — callers
+// treat "no device id" as auto-derive-from-MAC and skip this check.
+bool provform_device_id_valid(const char *id) {
+    if (!id) return false;
+    size_t n = strlen(id);
+    if (n < 2 || n > 32) return false;
+    char c0 = id[0];
+    if (c0 < 'a' || c0 > 'z') return false;
+    for (size_t i = 1; i < n; i++) {
+        char c = id[i];
+        bool ok = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+                  || c == '_' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
 // Normalize a server URL in-place: bare host:port gets http:// prepended;
 // http:// and https:// pass through; any other scheme is rejected; empty rejected.
 provform_url_result_t provform_normalize_server_url(char *url, size_t url_sz) {

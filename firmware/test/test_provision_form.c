@@ -35,6 +35,18 @@ int main(void) {
     strcpy(u, "");
     assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_EMPTY);
 
+    // device_id validation: ^[a-z][a-z0-9_-]{1,31}$
+    assert(provform_device_id_valid("picpak-1"));
+    assert(provform_device_id_valid("picpak-abc123_x"));
+    assert(provform_device_id_valid("ab"));                 // min length 2
+    assert(!provform_device_id_valid(""));                  // empty -> invalid (auto-derive)
+    assert(!provform_device_id_valid("a"));                 // too short
+    assert(!provform_device_id_valid("1picpak"));           // must start with a letter
+    assert(!provform_device_id_valid("Picpak"));            // no uppercase
+    assert(!provform_device_id_valid("pic pak"));           // no spaces
+    assert(!provform_device_id_valid("pic.pak"));           // no dots
+    assert(!provform_device_id_valid("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")); // 33 chars > 32
+
     printf("PASS\n");
     return 0;
 }

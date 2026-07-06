@@ -307,11 +307,15 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     char ssid[33] = {0}, pass[65] = {0};
     config_get_wifi(ssid, sizeof ssid, pass, sizeof pass);   // pass unused for the form
 
-    char e_ssid[160], e_server[640];
+    char device_id[33] = {0};
+    config_get_device_id(device_id, sizeof device_id);   // user-set or server-canonical
+
+    char e_ssid[160], e_server[640], e_devid[100];
     provform_html_escape(ssid,       e_ssid,   sizeof e_ssid);
     provform_html_escape(server_url, e_server, sizeof e_server);
-    // Device/MQTT/pairing fields are inert until M5 — rendered empty (no prefill).
-    const char *e_devid = "", *e_uri = "", *e_user = "", *e_pair = "";
+    provform_html_escape(device_id,  e_devid,  sizeof e_devid);
+    // MQTT fields inert until M5; pairing code is single-use so never echoed back.
+    const char *e_uri = "", *e_user = "", *e_pair = "";
 
     httpd_resp_set_type(req, "text/html; charset=utf-8");
     httpd_resp_sendstr_chunk(req, k_head);
@@ -394,7 +398,7 @@ static esp_err_t h_save(httpd_req_t *req)
 
     char ssid[33] = {0}, pass[65] = {0}, transport[8] = {0};
     char mqtt_uri[160] = {0}, mqtt_user[64] = {0}, mqtt_pass[64] = {0};
-    char server_url[192] = {0}, pairing_code[16] = {0};
+    char server_url[192] = {0}, pairing_code[16] = {0}, device_id[33] = {0};
 
     bool have_ssid = provform_field(body, "ssid", ssid, sizeof ssid) && ssid[0];
     bool have_pass = provform_field(body, "pass", pass, sizeof pass) && pass[0];
@@ -404,11 +408,18 @@ static esp_err_t h_save(httpd_req_t *req)
     bool have_mpw  = provform_field(body, "mqtt_pass", mqtt_pass, sizeof mqtt_pass) && mqtt_pass[0];
     provform_field(body, "server_url",  server_url,  sizeof server_url);
     provform_field(body, "pairing_code", pairing_code, sizeof pairing_code);
+    bool have_devid = provform_field(body, "device_id", device_id, sizeof device_id) && device_id[0];
 
     bool use_rest = (strcmp(transport, "mqtt") != 0);   // REST-default: REST unless explicitly MQTT
     uint8_t mode = use_rest ? 1 : 0;
 
     if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
+    // Device id is optional (blank = auto-derive from MAC), but if given it must
+    // match what the server accepts, else discovery would silently 400-loop.
+    if (have_devid && !provform_device_id_valid(device_id))
+        return render_form(req,
+            "Device id must be lowercase, start with a letter, and use only "
+            "letters, digits, - or _ (2-32 chars).");
     if (use_rest) {
         provform_url_result_t r = provform_normalize_server_url(server_url, sizeof server_url);
         if (r == PROVFORM_URL_EMPTY)
@@ -419,11 +430,15 @@ static esp_err_t h_save(httpd_req_t *req)
         return render_form(req, "MQTT broker URI is required when transport is MQTT.");
     }
 
-    ESP_LOGI(TAG, "saving ssid='%s' transport=%s server='%s'",
-             ssid, use_rest ? "rest" : "mqtt", use_rest ? server_url : "(mqtt)");
+    ESP_LOGI(TAG, "saving ssid='%s' transport=%s server='%s' device_id='%s'",
+             ssid, use_rest ? "rest" : "mqtt", use_rest ? server_url : "(mqtt)",
+             have_devid ? device_id : "(auto)");
 
     config_set_wifi(ssid, have_pass ? pass : NULL);   // blank pass keeps existing
     config_set_transport(mode);
+    // Device id is shared across transports. Blank = leave as-is (auto-derive
+    // from MAC at pair time, or keep the server's canonical id once paired).
+    if (have_devid) config_set_device_id(device_id);
     if (use_rest) {
         config_set_server_url(server_url);
         config_set_pairing_code(pairing_code);
