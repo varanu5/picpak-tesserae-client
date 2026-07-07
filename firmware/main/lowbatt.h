@@ -6,8 +6,8 @@
 #include "lowbatt_core.h"
 
 // Fixed thresholds (shipped constant — no NVS/console on this build).
-#define LOWBATT_ARM_MV   3300   // ~10%
-#define LOWBATT_CLR_MV   3500   // ~30%, hysteresis
+#define LOWBATT_ARM_MV   3300   // ~0% on the battpct.h curve (its floor is 3400 mV = 0%)
+#define LOWBATT_CLR_MV   3500   // ~2% on the battpct.h curve, hysteresis above ARM
 #define LOWBATT_RISE_MV  40     // "charging" if mV rose >= this over the poll window
 #define LOWBATT_STREAK   2      // consecutive sub-ARM reads before arming
 #define LOWBATT_WAKE_S   900    // 15-min low-power poll

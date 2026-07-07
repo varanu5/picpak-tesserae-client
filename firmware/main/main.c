@@ -69,7 +69,8 @@ void app_main(void) {
 
     // Low-battery gate. Measure now: the button (shared with the battery ADC on GPIO2) has been
     // released by power_boot_gesture, so GPIO2 reads the cell cleanly — and it's still before
-    // WiFi/EPD load the rail. Below ~10% -> charge screen + low-power poll until the voltage rises
+    // WiFi/EPD load the rail. Below ~0% (3300 mV, bottom of the battpct.h curve) -> charge screen
+    // + low-power poll until the voltage rises
     // (charging). A button-wake resumes NORMAL so the device is always recoverable.
     power_measure_battery();
     switch (lowbatt_gate(power_battery_mv(), esp_sleep_get_wakeup_cause())) {
