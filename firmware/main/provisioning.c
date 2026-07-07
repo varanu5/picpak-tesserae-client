@@ -179,19 +179,23 @@ static const char k_form_wifi_fmt[] =
 "</div>"
 "</section>";
 
-// Transport-mode card; %s x2 = (mqtt_checked, rest_checked).
-static const char k_form_transport_fmt[] =
+// Transport-mode card. MQTT is not implemented yet, so its radio is rendered
+// disabled and REST is always pre-checked — no format args (see render_form).
+// TODO(M5): restore the "%s x2 = (mqtt_checked, rest_checked)" pre-check when the
+// MQTT client lands, and re-enable the radio below.
+static const char k_form_transport[] =
 "<section class=\"card\"><h2>Transport</h2>"
 "<div class=\"field\">"
-"<label class=\"radio\" for=\"tr-mqtt\">"
-"<input type=\"radio\" name=\"transport\" value=\"mqtt\" id=\"tr-mqtt\"%s>"
+"<label class=\"radio\" for=\"tr-mqtt\" style=\"opacity:.5;cursor:not-allowed\">"
+"<input type=\"radio\" name=\"transport\" value=\"mqtt\" id=\"tr-mqtt\" disabled>"
 "<span><strong>MQTT broker</strong>"
 "<p class=\"hint\" style=\"margin:2px 0 0\">"
-"Subscribes to a retained frame topic. Requires a broker on your LAN. (Coming soon.)</p>"
+"Subscribes to a retained frame topic. Requires a broker on your LAN. "
+"(Coming soon &mdash; not yet selectable.)</p>"
 "</span>"
 "</label>"
 "<label class=\"radio\" for=\"tr-rest\" style=\"margin-top:10px\">"
-"<input type=\"radio\" name=\"transport\" value=\"rest\" id=\"tr-rest\"%s>"
+"<input type=\"radio\" name=\"transport\" value=\"rest\" id=\"tr-rest\" checked>"
 "<span><strong>REST API</strong> <span style=\"color:var(--muted);font-weight:400\">(recommended)</span>"
 "<p class=\"hint\" style=\"margin:2px 0 0\">"
 "Polls the Tesserae server directly. No broker needed.</p>"
@@ -301,7 +305,6 @@ static const char k_thanks_html[] =
 // defaults to REST (config_get_transport fallback) — our only working transport.
 static esp_err_t render_form(httpd_req_t *req, const char *error)
 {
-    uint8_t transport_mode = config_get_transport(1);   // 1=REST default
     char server_url[160] = {0};
     config_get_server_url(server_url, sizeof server_url);
     char ssid[33] = {0}, pass[65] = {0};
@@ -357,12 +360,9 @@ static esp_err_t render_form(httpd_req_t *req, const char *error)
     snprintf(form_wifi, sizeof form_wifi, k_form_wifi_fmt, e_ssid, picker);
     httpd_resp_sendstr_chunk(req, form_wifi);
 
-    char form_transport[1200];
-    const char *mqtt_checked = (transport_mode == 1) ? "" : " checked";
-    const char *rest_checked = (transport_mode == 1) ? " checked" : "";
-    snprintf(form_transport, sizeof form_transport, k_form_transport_fmt,
-             mqtt_checked, rest_checked);
-    httpd_resp_sendstr_chunk(req, form_transport);
+    // REST-only for now: the MQTT radio is disabled and REST is always checked,
+    // so the stored transport no longer drives a pre-check. Send the static card.
+    httpd_resp_sendstr_chunk(req, k_form_transport);
 
     char form_mqtt[1800];
     snprintf(form_mqtt, sizeof form_mqtt, k_form_mqtt_fmt, e_devid, e_uri, e_user);
@@ -410,7 +410,12 @@ static esp_err_t h_save(httpd_req_t *req)
     provform_field(body, "pairing_code", pairing_code, sizeof pairing_code);
     bool have_devid = provform_field(body, "device_id", device_id, sizeof device_id) && device_id[0];
 
-    bool use_rest = (strcmp(transport, "mqtt") != 0);   // REST-default: REST unless explicitly MQTT
+    // MQTT isn't implemented yet: the portal radio is disabled AND we force REST
+    // here, so a stale NVS flag or a hand-crafted POST can't strand the device on
+    // a transport with no client. TODO(M5): restore
+    //   bool use_rest = (strcmp(transport, "mqtt") != 0);
+    // once the MQTT client lands and re-enable the radio in k_form_transport.
+    bool use_rest = true;
     uint8_t mode = use_rest ? 1 : 0;
 
     if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
@@ -430,9 +435,9 @@ static esp_err_t h_save(httpd_req_t *req)
         return render_form(req, "MQTT broker URI is required when transport is MQTT.");
     }
 
-    ESP_LOGI(TAG, "saving ssid='%s' transport=%s server='%s' device_id='%s'",
-             ssid, use_rest ? "rest" : "mqtt", use_rest ? server_url : "(mqtt)",
-             have_devid ? device_id : "(auto)");
+    ESP_LOGI(TAG, "saving ssid='%s' transport=%s (req='%s') server='%s' device_id='%s'",
+             ssid, use_rest ? "rest" : "mqtt", transport[0] ? transport : "rest",
+             use_rest ? server_url : "(mqtt)", have_devid ? device_id : "(auto)");
 
     config_set_wifi(ssid, have_pass ? pass : NULL);   // blank pass keeps existing
     config_set_transport(mode);

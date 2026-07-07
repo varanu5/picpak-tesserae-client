@@ -14,12 +14,12 @@
 // ── User button (active-low) + battery ADC muxed on same pin ──
 #define PIN_BTN      2
 // Battery sense shares the button pin (GPIO2 = ADC1 channel 2). Reading it
-// means momentarily driving the pin as ADC. Divider ratio is a placeholder
-// pending calibration against the stock "adc1_ch2" method.
+// means momentarily driving the pin as ADC.
 #define BATT_ADC_CHANNEL   2       /* ADC1_CHANNEL_2 == GPIO2 */
-#define BATT_DIVIDER       1.45f   /* voltageMv = calibrated pin_mv * BATT_DIVIDER. Calibrated so
-                                    * a full cell (pin_mv~2852 @ 4.2V) reads 4.2V on our 12dB ADC.
-                                    * For exactness: BATT_DIVIDER = V_battery(mV) / pin_mv (log). */
+#define BATT_DIVIDER       1.45f   /* voltageMv = calibrated pin_mv * BATT_DIVIDER. Value is the
+                                    * stock-firmware disassembly ratio (see docs/low-battery.md);
+                                    * a full cell (pin_mv ~2897 @ 4.2V) reads 4.2V on our 12dB ADC.
+                                    * For exactness: BATT_DIVIDER = V_battery(mV) / pin_mv. */
 
 // ── Panel geometry (400×300, 4-colour BWRY, 2 bits/pixel) ──
 #define EPD_W        400
