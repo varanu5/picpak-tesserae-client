@@ -47,8 +47,7 @@ Raw, headerless, exactly **30 000 bytes** (`400 × 300 ÷ 4`), **2 bits per pixe
 Rows are packed **bottom-to-top** (the panel scans that way; the renderer flips vertically before
 packing — otherwise the image paints upside-down).
 
-The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`. The server needs the
-matching renderer + device from [`server-plugin/`](server-plugin/) (see [Server plugin](#server-plugin)).
+The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`.
 
 ## Heartbeat schema
 
