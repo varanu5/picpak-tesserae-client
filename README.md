@@ -10,7 +10,7 @@ Modelled on Tesserae's battery-native reference client
 but retargeted to the PicPak's hardware: a smaller 4-colour panel, an ESP32-C3 (RISC-V) instead of an
 S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame format.
 
-> **Status:** experimental, working end-to-end over REST on real hardware. `FW_VERSION 0.2.0-dev`.
+> **Status:** working end-to-end over REST on real hardware. `FW_VERSION 0.3.0`.
 > See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 
 ## Hardware
@@ -47,11 +47,14 @@ Raw, headerless, exactly **30 000 bytes** (`400 × 300 ÷ 4`), **2 bits per pixe
 Rows are packed **bottom-to-top** (the panel scans that way; the renderer flips vertically before
 packing — otherwise the image paints upside-down).
 
-The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`.
+The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`. The matching 
+renderer and `picpak_client` device kind ship **built into the Tesserae server**
 
 ## Heartbeat schema
 
-Posted at the end of every wake to `/api/v1/device/<id>/status`:
+Posted once per wake to `/api/v1/device/<id>/status` — after the frame GET, before any paint (the
+radio is turned off for the panel refresh, so on repaint wakes the server's "last seen" precedes the
+paint by its 13–22 s duration):
 
 ```json
 {
@@ -59,7 +62,7 @@ Posted at the end of every wake to `/api/v1/device/<id>/status`:
   "battery_pct": 96,
   "rssi": -63,
   "ip": "10.0.20.40",
-  "fw_version": "0.2.0-dev",
+  "fw_version": "0.3.0",
   "kind": "picpak_client",
   "panel_w": 400,
   "panel_h": 300,
@@ -90,22 +93,97 @@ The `device_token` is persisted to NVS on first pairing; later wakes go straight
 ## Build & flash
 
 > **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.**
-> 
+
 Requires **ESP-IDF v5.4.x**.
 
 ```sh
 cd firmware
 idf.py set-target esp32c3
 idf.py build
-idf.py -p /dev/cu.usbmodemxxxx flash monitor
+idf.py -p /dev/cu.usbmodemXXX flash monitor
 ```
 
-> **BACK UP THE STOCK FIRMWARE BEFORE FLASHING.** 
+**Finding the port:** the C3's native USB-Serial-JTAG shows up as `/dev/cu.usbmodem*` on macOS
+(`/dev/ttyACM*` on Linux). List it with `ls /dev/cu.usbmodem*`. The number encodes the USB
+port/hub position, so it **changes when you replug into a different port** — re-check it rather
+than assuming last time's name. You can also drop `-p` entirely and let `idf.py` auto-detect.
+
+**Monitor without flashing** (watch wakes on the running firmware): `idf.py -p <PORT> monitor` —
+exit with `Ctrl+]`. The device deep-sleeps between wakes, so expect silence until a timer wake or
+a button press; logs are symbolized against your last build's ELF.
+
+> ⚠️ **Never `erase_flash` this board** — a full chip erase of the 32 MB part fails partway and
+> leaves the device half-wiped (recovery: just flash again — small region writes work). Use plain
+> `flash` / `write_flash`; to wipe only the saved config, see *Factory reset* below.
 
 `secrets.h` is optional: `firmware/main/defaults.h` includes it via `__has_include`,
 so the firmware **builds and boots without it** (empty WiFi/server defaults → it comes up in the
 captive portal). Copy `firmware/main/secrets.example.h` → `secrets.h` only if you want to bake in dev
-credentials.
+credentials. Note that `secrets.h` values are compiled into `.rodata` — don't publish a binary built
+with real credentials (`strings picpak_custom.bin | grep` would expose them); release builds should
+be made without `secrets.h`.
+
+### Flashing a release build (esptool only, no ESP-IDF)
+
+Each [release](../../releases) ships four files plus `SHA256SUMS`; only esptool is needed
+(`pip install esptool`):
+
+| File | Flash offset | |
+| --- | --- | --- |
+| `bootloader.bin` | `0x0` | |
+| `partition-table.bin` | `0x8000` | |
+| `nvs_blank.bin` | `0x9000` | blank settings — guarantees the setup portal on first boot; **omit when upgrading** to keep saved WiFi/pairing |
+| `picpak_custom.bin` | `0x10000` | |
+
+```sh
+python -m esptool --chip esp32c3 -p <PORT> -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 bootloader.bin 0x8000 partition-table.bin 0x9000 nvs_blank.bin 0x10000 picpak_custom.bin
+```
+
+If the connection is flaky at 460800, drop to `-b 115200`. *"The port is busy or doesn't exist"*
+means something else holds the port — usually an open serial monitor; close it and re-run.
+
+### Coming from the official PicPak firmware
+
+- **Back up first — you cannot re-download the stock firmware.** Use `--no-stub` (the ROM
+  loader): the stub flasher is unreliable for large reads on this 32 MB flash chip. Slow
+  (tens of minutes) — keep the frame plugged in:
+
+  ```sh
+  python -m esptool --chip esp32c3 -p <PORT> -b 921600 --no-stub read_flash 0x0 0x1000000 stock_backup.bin
+  ```
+
+  Run the readback **twice** and compare checksums (`shasum -a 256 stock_backup*.bin`) — only
+  trust a backup when two reads match. Keep the checksum with the backup file.
+- **The partition layout changes** (stock dual-OTA → our single factory app), so the vendor's
+  update/OTA tools stop recognizing the device until you restore stock — expected.
+
+### Restoring the stock firmware
+
+Flash your `stock_backup.bin` back at offset `0x0` — but **not** as one monolithic stub-mode
+write (it silently fails to persist on this chip). Two ways that work:
+
+- **ESP Launchpad** (easiest): <https://espressif.github.io/esp-launchpad/> in Chrome/Edge,
+  DIY tab → add the backup at address `0x0` → flash.
+- **esptool with `--no-stub`**, verified afterwards:
+
+  ```sh
+  python -m esptool --chip esp32c3 -p <PORT> --no-stub write_flash --flash_size 16MB 0x0 stock_backup.bin
+  python -m esptool --chip esp32c3 -p <PORT> --no-stub verify_flash --flash_size 16MB 0x0 stock_backup.bin
+  ```
+
+  Only trust the restore once `verify_flash` passes. If it fails partway, re-enter bootloader
+  mode (unplug → hold the button → replug while holding → release when the port appears) and
+  re-run with the same backup — repeating is safe. (The vendor's own recovery tool uses this
+  no-stub path, writing in 256 KB blocks with per-block verify.)
+
+### Factory reset (settings only)
+
+Wipes saved WiFi/server/pairing but keeps the firmware — the device comes back up in the setup
+portal:
+
+```sh
+python -m esptool --chip esp32c3 -p <PORT> erase_region 0x9000 0x6000
+```
 
 ## Provisioning
 
@@ -150,6 +228,14 @@ Three panel screens (baked 2 bpp blobs, generated by `tools/gen_splash.py`, embe
   The decision is a pure, host-tested FSM.
 - **Battery reading** is taken once early each wake (pre-load) and cached, so the reported value is
   accurate and there's a single ADC read per cycle.
+- **Radio off during the panel refresh.** All network I/O (frame GET + heartbeat POST) finishes
+  first, then WiFi stops, then the panel paints — the radio never idles (~80 mA) through the
+  13–22 s refresh, which is also the board's worst-case rail load (brownout margin).
+- **Lazy panel init.** The EPD is powered and initialized only when a new frame actually arrived;
+  on the common 304 "unchanged" wake the panel is never touched.
+- **No NTP on the wake path.** The C3 keeps RTC time across deep sleep, and nothing in the current
+  build consumes wall-clock time — so there's no blocking SNTP exchange per wake (the reference
+  firmware needs one only as a PMIC workaround).
 
 ## Project layout
 
@@ -158,7 +244,7 @@ picpak-tesserae-client/
 ├── firmware/
 │   ├── CMakeLists.txt · partitions.csv · sdkconfig.defaults
 │   └── main/
-│       ├── main.c              # wake loop: boot → gesture/provision → low-batt gate → wifi → fetch → paint → heartbeat → sleep
+│       ├── main.c              # wake loop: boot → gesture/provision → gates → wifi → fetch → heartbeat → radio off → paint → sleep
 │       ├── board.h · defaults.h # pin map + compile-time tunables (secrets.h optional override)
 │       ├── epd_driver.{c,h}     # 400×300 BWRY UC81xx panel driver + init sequence
 │       ├── fb2bpp.{c,h}         # 2 bpp framebuffer packer (+ host test)
@@ -166,7 +252,7 @@ picpak-tesserae-client/
 │       ├── battpct.h            # pure mV→% Li-Po curve (host-tested)
 │       ├── lowbatt*.{c,h}       # low-battery gate (pure FSM + RTC glue)
 │       ├── config_store.{c,h}   # NVS config (creds, token, etag, sleep) with secrets.h fallback
-│       ├── wifi_manager.{c,h}   # STA connect + NTP
+│       ├── wifi_manager.{c,h}   # STA connect (+ SNTP helper, off the wake path)
 │       ├── provisioning*.{c,h}  # SoftAP captive portal + pure form parser
 │       ├── splash.{c,h}         # embedded setup / paired / low-batt screens
 │       ├── image_fetcher.{c,h}  # HTTP frame download
