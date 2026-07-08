@@ -49,15 +49,6 @@ void app_main(void) {
         power_deep_sleep(SLEEP_INTERVAL_DEFAULT_S);   // timeout: sleep, retry portal next wake
     }
 
-    // One-shot after provisioning: paint the "waiting for first frame" splash and
-    // clear the ETag so the first /frame returns 200 and the real photo repaints
-    // over the splash.
-    if (config_take_paired_pending()) {
-        config_set_etag("");
-        splash_show_paired();
-        ESP_LOGI(TAG, "paired_pend: painted paired splash + cleared ETag");
-    }
-
     // Brownout-aware boot: if we reset from a brownout, the battery is too low to
     // safely run the WiFi radio. Defer and deep-sleep so it can recover instead of
     // rapid reset-looping (which drains faster than it charges).
@@ -89,17 +80,47 @@ void app_main(void) {
             break;   // healthy / recovered / button-wake -> normal cycle
     }
 
+    // One-shot after provisioning: paint the "waiting for first frame" splash and
+    // clear the ETag so the first /frame returns 200 and the real photo repaints
+    // over the splash. Deliberately after the power-fault and low-battery gates:
+    // the 13-22 s EPD refresh is the heaviest rail load we have, and taking the
+    // flag earlier would consume it just before a brownout could kill the paint —
+    // gated here, the splash intent survives to the next healthy boot.
+    if (config_take_paired_pending()) {
+        config_set_etag("");
+        splash_show_paired();
+        ESP_LOGI(TAG, "paired_pend: painted paired splash + cleared ETag");
+    }
+
+    // No NTP here: nothing in this build reads the clock, and the C3 keeps RTC
+    // time across deep sleep (the reference's every-wake SNTP works around its
+    // AXP2101 PMIC corrupting the RTC — hardware we don't have). wifi_sync_ntp
+    // stays compiled: it becomes the cold-boot clock source in MQTT mode (M5),
+    // and `server_time` seeding covers REST when sleep_until lands.
     int next = SLEEP_INTERVAL_DEFAULT_S;
     vTaskDelay(pdMS_TO_TICKS(WIFI_SETTLE_MS));   // let the rail settle before the radio
     if (wifi_start_sta() == ESP_OK) {
-        wifi_sync_ntp();
-        ESP_ERROR_CHECK(epd_init());   // panel ready before any paint
-        next = rest_run_loop(reason);  // paints only on a new frame
-        epd_sleep();
+        next = rest_run_loop(reason);  // network I/O only; a new frame is buffered, not painted
     } else {
         ESP_LOGW(TAG, "WiFi failed; keeping last image, retry next wake");
     }
-
     wifi_stop();
+
+    // Transport-agnostic contract: all network I/O finishes, then radio off, then
+    // paint. Radio + EPD refresh together is the worst-case rail load on a board
+    // that browns out on radio spikes, and the radio idling through a 13-22 s
+    // refresh burns ~80 mA for nothing. EPD init is lazy for the same reason:
+    // most wakes end in a 304 and the panel never powers up at all.
+    const uint8_t *fb = rest_pending_frame();
+    if (fb) {
+        if (epd_init() == ESP_OK) {
+            ESP_LOGI(TAG, "painting new frame (radio off)");
+            epd_display(fb);
+            rest_frame_painted();   // persist the ETag only after a successful paint
+            epd_sleep();
+        } else {
+            ESP_LOGW(TAG, "epd_init failed; keeping last image, retry next wake");
+        }
+    }
     power_deep_sleep((uint32_t)next);   // no return
 }

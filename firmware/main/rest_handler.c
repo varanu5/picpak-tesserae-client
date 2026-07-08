@@ -5,7 +5,6 @@
 #include "defaults.h"
 #include "image_fetcher.h"
 #include "heartbeat.h"
-#include "epd_driver.h"
 #include "board.h"
 
 #include <string.h>
@@ -18,6 +17,8 @@
 
 static const char *TAG = "rest";
 static uint8_t s_frame[EPD_FB_BYTES];   // static SRAM frame buffer (no PSRAM)
+static bool    s_frame_pending = false; // s_frame holds a validated new frame for this wake
+static char    s_pending_etag[80];      // its ETag; persisted only after a successful paint
 
 typedef struct {
     char *body;   // NUL-terminated accumulator (may be NULL)
@@ -197,9 +198,11 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
         if (cJSON_IsString(urlj) && urlj->valuestring[0]) {
             int n = image_fetch(urlj->valuestring, s_frame, sizeof(s_frame));
             if (n == EPD_FB_BYTES) {
-                ESP_LOGI(TAG, "painting new frame");
-                epd_display(s_frame);
-                if (fr.etag[0]) config_set_etag(fr.etag);
+                // Not painted here: main paints after wifi_stop() so the radio
+                // never idles through (or brown-outs) the 13-22 s EPD refresh.
+                s_frame_pending = true;
+                strlcpy(s_pending_etag, fr.etag, sizeof(s_pending_etag));
+                ESP_LOGI(TAG, "new frame buffered; painting after radio-off");
             } else {
                 ESP_LOGE(TAG, "frame size %d != %d; refusing to paint", n, EPD_FB_BYTES);
             }
@@ -236,6 +239,20 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
             if (cJSON_IsNumber(np) && np->valueint > 0) next = (uint32_t)np->valueint;
             cJSON_Delete(j);
         }
+    } else if (sst == 401) {
+        // Same healing as the /frame 401: a token revoked between the two calls
+        // would otherwise take an extra full sleep cycle to re-pair.
+        ESP_LOGW(TAG, "status 401; wiping token to re-pair next wake");
+        config_set_device_token("");
     }
     return (int)next;
+}
+
+const uint8_t *rest_pending_frame(void) {
+    return s_frame_pending ? s_frame : NULL;
+}
+
+void rest_frame_painted(void) {
+    s_frame_pending = false;
+    if (s_pending_etag[0]) config_set_etag(s_pending_etag);
 }

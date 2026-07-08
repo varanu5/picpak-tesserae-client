@@ -11,6 +11,14 @@ int main(void) {
     // url_decode: %XX and '+'
     strcpy(b, "a+b%20c%2Fd"); provform_url_decode(b); assert(strcmp(b, "a b c/d") == 0);
 
+    // url_decode: malformed escapes pass through literally, never embed a NUL
+    strcpy(b, "a%zzb");  provform_url_decode(b); assert(strcmp(b, "a%zzb") == 0);
+    strcpy(b, "a%2");    provform_url_decode(b); assert(strcmp(b, "a%2") == 0);   // truncated escape
+    strcpy(b, "a%");     provform_url_decode(b); assert(strcmp(b, "a%") == 0);
+    strcpy(b, "%g1x");   provform_url_decode(b); assert(strcmp(b, "%g1x") == 0);
+    strcpy(b, "a%2Gb");  provform_url_decode(b); assert(strcmp(b, "a%2Gb") == 0); // one bad digit
+    strcpy(b, "%41%61"); provform_url_decode(b); assert(strcmp(b, "Aa") == 0);    // uppercase hex still works
+
     // html_escape
     char e[64]; provform_html_escape("a<b>&\"c", e, sizeof e);
     assert(strcmp(e, "a&lt;b&gt;&amp;&quot;c") == 0);

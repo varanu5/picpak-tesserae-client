@@ -27,7 +27,7 @@ static int cmp_int(const void *a, const void *b) {
 static int power_read_mv(void) {
     adc_oneshot_unit_handle_t adc = NULL;
     adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
-    if (adc_oneshot_new_unit(&ucfg, &adc) != ESP_OK) return 0;
+    if (adc_oneshot_new_unit(&ucfg, &adc) != ESP_OK) return -1;   // failure sentinel (0 would read as a flat cell)
     adc_oneshot_chan_cfg_t ccfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
     adc_oneshot_config_channel(adc, BATT_ADC_CHANNEL, &ccfg);
 
@@ -37,7 +37,7 @@ static int power_read_mv(void) {
         int r;
         if (adc_oneshot_read(adc, BATT_ADC_CHANNEL, &r) == ESP_OK) s[got++] = r;
     }
-    if (!got) { adc_oneshot_del_unit(adc); return 0; }
+    if (!got) { adc_oneshot_del_unit(adc); return -1; }
     qsort(s, got, sizeof(int), cmp_int);
     int raw_med = s[got / 2];
 
@@ -64,7 +64,7 @@ static int power_read_mv(void) {
     return mv;
 }
 
-static int s_batt_mv = -1;   // cached reading; <0 = not yet measured this boot
+static int s_batt_mv = -1;   // cached reading; <0 = not yet measured this boot (or read failed -> retry)
 
 // Measure once and cache — call early (before WiFi/EPD load the rail) for an accurate value.
 void power_measure_battery(void) { s_batt_mv = power_read_mv(); }

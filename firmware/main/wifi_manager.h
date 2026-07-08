@@ -9,4 +9,6 @@ esp_err_t wifi_start_sta(void);   // connect with config_store creds (blocking, 
 void      wifi_stop(void);
 bool      wifi_get_sta_ip(char *out, size_t out_sz);
 int       wifi_rssi(void);
-esp_err_t wifi_sync_ntp(void);    // best-effort SNTP, waits a few seconds
+esp_err_t wifi_sync_ntp(void);    // best-effort SNTP, waits a few seconds. Off the wake
+                                  // path (see main.c) but keep compiled: it's the planned
+                                  // cold-boot clock source for MQTT mode (M5).

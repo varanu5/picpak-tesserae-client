@@ -13,15 +13,35 @@ int image_fetch(const char *url, uint8_t *buf, size_t buf_sz) {
     if (esp_http_client_open(c, 0) != ESP_OK) { esp_http_client_cleanup(c); return -1; }
     esp_http_client_fetch_headers(c);
 
+    int status = esp_http_client_get_status_code(c);
+    if (status < 200 || status > 299) {
+        ESP_LOGE(TAG, "HTTP %d; not reading body", status);
+        esp_http_client_close(c);
+        esp_http_client_cleanup(c);
+        return -1;
+    }
+
     int total = 0, r;
     while (total < (int)buf_sz &&
            (r = esp_http_client_read(c, (char *)buf + total, buf_sz - total)) > 0) {
         total += r;
     }
-    int status = esp_http_client_get_status_code(c);
+    // Oversize probe: with the buffer full, one more successful read means the
+    // body is bigger than buf_sz — without this, a 40 KB response would read as
+    // exactly buf_sz bytes and paint garbage. Works for chunked responses too,
+    // where the Content-Length header is absent.
+    if (total == (int)buf_sz) {
+        char extra;
+        if (esp_http_client_read(c, &extra, 1) > 0) {
+            ESP_LOGE(TAG, "body exceeds %d bytes; rejecting", (int)buf_sz);
+            esp_http_client_close(c);
+            esp_http_client_cleanup(c);
+            return -1;
+        }
+    }
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
 
     ESP_LOGI(TAG, "fetched %d bytes (HTTP %d)", total, status);
-    return (status == 200) ? total : -1;
+    return total;
 }

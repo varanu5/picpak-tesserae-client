@@ -62,6 +62,26 @@ int main(void) {
     r = d(-1, false, false, FRESH);
     assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.low_streak == 0);
 
+    // 0 mV (an ADC-failure sentinel) is implausible too — a Li-Po can't be there
+    r = d(0, false, false, FRESH);
+    assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.low_streak == 0);
+
+    // anything below the plausibility floor is ignored, not treated as "extremely low"
+    r = d(2400, false, false, FRESH);
+    assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.low_streak == 0);
+
+    // an implausible read mid-streak neither extends nor resets the debounce
+    r = d(0, false, false, one_low.next);
+    assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.low_streak == 1);
+
+    // locked + implausible read -> no false recovery, lock persists
+    r = d(0, false, false, locked);
+    assert(r.action == LOWBATT_NORMAL && r.next.lock && r.next.last_mv == 3230);
+
+    // button wake with an implausible read must not corrupt the baseline
+    r = d(0, true, false, locked);
+    assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.last_mv == 3230);
+
     printf("PASS\n");
     return 0;
 }

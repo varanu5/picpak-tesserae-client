@@ -28,14 +28,24 @@ void provform_html_escape(const char *src, char *dst, size_t dst_sz) {
     dst[o] = '\0';
 }
 
-// URL-decode %xx and '+' in-place. Caller-owned buffer.
+static int hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// URL-decode %xx and '+' in-place. Caller-owned buffer. A malformed escape
+// (%zz, truncated %2) passes through literally — strtol on it would yield 0
+// and embed a string-truncating NUL.
 void provform_url_decode(char *s) {
     char *o = s;
     for (char *p = s; *p; p++) {
+        int hi, lo;
         if (*p == '+') { *o++ = ' '; }
-        else if (*p == '%' && p[1] && p[2]) {
-            char hex[3] = { p[1], p[2], 0 };
-            *o++ = (char)strtol(hex, NULL, 16);
+        else if (*p == '%' && p[1] && p[2] &&
+                 (hi = hexval(p[1])) >= 0 && (lo = hexval(p[2])) >= 0) {
+            *o++ = (char)(hi << 4 | lo);
             p += 2;
         } else *o++ = *p;
     }

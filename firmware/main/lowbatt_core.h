@@ -11,6 +11,10 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+// Readings below this are implausible for a Li-Po (no cell, button shorting the shared ADC
+// pin, or an ADC-failure sentinel like -1/0) — never gate on them.
+#define LOWBATT_MIN_PLAUSIBLE_MV 2500
+
 typedef struct {
     uint16_t arm_mv;      // lock when the cell is below this
     uint16_t clr_mv;      // unlock at/above this (absolute recovery)
@@ -36,8 +40,8 @@ typedef struct {
 } lowbatt_result_t;
 
 // Decide the action for this wake and the state to carry forward. Pure: no side effects.
-//   batt_mv     < 0 means an implausible read (no cell / button shorting the shared ADC pin) —
-//               never gate on garbage.
+//   batt_mv     below LOWBATT_MIN_PLAUSIBLE_MV means an implausible read (ADC failure, no
+//               cell, button shorting the shared ADC pin) — never gate on garbage.
 //   button_wake this wake came from the button (a deliberate resume).
 //   usb_present tethered to a data host (kept for callers that can detect it; false is fine).
 //   enabled     master switch; off -> always NORMAL, state untouched.
@@ -50,11 +54,11 @@ static inline lowbatt_result_t lowbatt_decide(int batt_mv, bool button_wake, boo
     if (button_wake || usb_present) {             // deliberate resume / tethered -> never gate
         r.next.lock = false;
         r.next.low_streak = 0;
-        if (batt_mv >= 0) r.next.last_mv = (int16_t)batt_mv;
+        if (batt_mv >= LOWBATT_MIN_PLAUSIBLE_MV) r.next.last_mv = (int16_t)batt_mv;
         return r;
     }
 
-    if (batt_mv < 0) return r;                    // implausible reading -> don't act on it
+    if (batt_mv < LOWBATT_MIN_PLAUSIBLE_MV) return r;   // implausible reading -> don't act on it
 
     if (st.lock) {                                // in the low-power poll: look for recovery
         bool rose = (st.last_mv >= 0) && (batt_mv - (int)st.last_mv >= (int)cfg.rise_mv);

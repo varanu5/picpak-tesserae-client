@@ -67,7 +67,9 @@ static void dns_hijack_task(void *arg)
         socklen_t slen = sizeof(src);
         int n = recvfrom(sock, buf, sizeof(buf), 0,
                          (struct sockaddr *)&src, &slen);
-        if (n < 12) continue;   // DNS header is 12 bytes minimum
+        // DNS header is 12 bytes minimum; upper bound leaves room for the
+        // 16-byte answer appended below (would overflow the stack otherwise)
+        if (n < 12 || n > (int)sizeof(buf) - 16) continue;
 
         buf[2] = 0x84;   // QR=1 AA=1 OPCODE=0
         buf[3] = 0x00;   // RCODE=0
@@ -388,7 +390,25 @@ static esp_err_t h_root(httpd_req_t *req)
 // a server change self-heals via the 401->wipe in rest_handler.
 static esp_err_t h_save(httpd_req_t *req)
 {
-    char body[1536]; int total = 0;
+    // static: keeps 3 KB off the httpd task stack; safe because ESP-IDF httpd runs
+    // all handlers on one task. 3072 covers the worst-case fully percent-encoded
+    // form (~1.9 KB incl. the MQTT fields, which still submit while JS-hidden).
+    static char body[3072];
+    int total = 0;
+    // A body that wouldn't fit would parse as silently truncated fields (e.g. a
+    // chopped server_url persisted without error) — reject it outright instead.
+    if (req->content_len >= sizeof(body)) {
+        // Drain and discard so the leftover bytes aren't misparsed as a next
+        // request on this connection, then re-render the form with the error.
+        char sink[256];
+        int left = (int)req->content_len;
+        while (left > 0) {
+            int n = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
+            if (n <= 0) break;
+            left -= n;
+        }
+        return render_form(req, "Submission too large. Please shorten the longest fields and try again.");
+    }
     while (total < (int)sizeof(body) - 1) {
         int n = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
         if (n <= 0) break;
