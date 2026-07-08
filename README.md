@@ -47,8 +47,8 @@ Raw, headerless, exactly **30 000 bytes** (`400 × 300 ÷ 4`), **2 bits per pixe
 Rows are packed **bottom-to-top** (the panel scans that way; the renderer flips vertically before
 packing — otherwise the image paints upside-down).
 
-The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`. The matching 
-renderer and `picpak_client` device kind ship **built into the Tesserae server**
+The heartbeat reports `kind: "picpak_client"` and `panel_w: 400, panel_h: 300`. The matching
+renderer and `picpak_client` device kind ship **built into the Tesserae server**.
 
 ## Heartbeat schema
 
@@ -104,9 +104,11 @@ idf.py -p /dev/cu.usbmodemXXX flash monitor
 ```
 
 **Finding the port:** the C3's native USB-Serial-JTAG shows up as `/dev/cu.usbmodem*` on macOS
-(`/dev/ttyACM*` on Linux). List it with `ls /dev/cu.usbmodem*`. The number encodes the USB
-port/hub position, so it **changes when you replug into a different port** — re-check it rather
-than assuming last time's name. You can also drop `-p` entirely and let `idf.py` auto-detect.
+(`/dev/ttyACM*` on Linux; on Windows as "USB Serial Device (COMx)" under Device Manager →
+Ports (COM & LPT) — use `COM<x>`). List it with `ls /dev/cu.usbmodem*`. The number encodes the
+USB port/hub position, so it **changes when you replug into a different port** — re-check it
+rather than assuming last time's name. You can also drop `-p` entirely and let `idf.py`
+auto-detect.
 
 **Monitor without flashing** (watch wakes on the running firmware): `idf.py -p <PORT> monitor` —
 exit with `Ctrl+]`. The device deep-sleeps between wakes, so expect silence until a timer wake or
@@ -144,7 +146,7 @@ means something else holds the port — usually an open serial monitor; close it
 
 ### Coming from the official PicPak firmware
 
-- **Back up first — you cannot re-download the stock firmware.** Use `--no-stub` (the ROM
+- **BACK UP FIRST — you cannot re-download the stock firmware.** Use `--no-stub` (the ROM
   loader): the stub flasher is unreliable for large reads on this 32 MB flash chip. Slow
   (tens of minutes) — keep the frame plugged in:
 
