@@ -262,7 +262,13 @@ picpak-tesserae-client/
 │       └── heartbeat.{c,h}      # battery / RSSI / IP / panel JSON
 └── tools/
     ├── gen_splash.py           # generate the 2 bpp splash blobs
+
 ```
+
+## Disclaimer
+
+This is a pure hobby project, provided as-is with no warranty of any kind. While everything works on my own devices, I take no responsibility for any damage resulting from its use — including but not limited to bricked devices, lost photos or other data, or voided warranties. Flash and use this firmware entirely at your own risk.
+
 ## Credits
 
 The wake state machine, REST/heartbeat contract, captive-portal provisioning, and NVS schema follow
