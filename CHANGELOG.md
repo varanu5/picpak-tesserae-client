@@ -1,5 +1,116 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- **HTTPS server URLs.** `https://` server URLs now work end-to-end (REST
+  calls and the frame download), validated against ESP-IDF's built-in CA
+  bundle — publicly-trusted certificates only (e.g. Let's Encrypt behind a
+  reverse proxy); self-signed won't validate. The bundle is attached only on
+  `https://` URLs (attaching it on plain http mis-configures the client).
+  Before an https REST cycle with an implausible clock, the MQTT-mode SNTP
+  sanity sync runs once so the first TLS handshake doesn't fail the
+  certificate validity check on a 1970 clock. Portal hint updated to match.
+- **Post-setup error feedback (WiFi).** One-shot on the first boot after
+  provisioning: a WiFi failure with a wrong-password signature (`AUTH_FAIL`,
+  `AUTH_EXPIRE`, handshake timeouts) or a no-such-network signature
+  (`NO_AP_FOUND` + security-mismatch variants) reopens the captive portal
+  with a matching error banner instead of silently sleep-retrying forever.
+  Transient outages match neither signature and keep the silent retry, so a
+  provisioned device never drops to AP mode on a router blip. Deliberately
+  NOT extended to the server/broker URL: an unreachable backend at first
+  boot is usually the user's own server restarting — the frame keeps
+  retrying on its own and catches up when it returns (a genuinely wrong URL
+  is fixed via the 20 s button-hold portal).
+- **MQTT transport (Mode 0).** Single-session wake loop
+  (`mqtt_handler.c`): one broker connect per wake — subscribe the retained
+  `tesserae/<id>/frame/bin` + `config` topics, HTTP-download the frame,
+  publish the heartbeat retained (QoS 1, PUBACK-confirmed), graceful stop
+  before the radio goes down, then paint radio-off like the REST path.
+  Frame skip by URL match (new NVS key `rest/frame_url`, kept separate from
+  the REST ETag so transport switches never false-skip). Non-retained
+  `{"state":"offline"}` LWT so an ungraceful drop is visible without
+  clobbering the retained heartbeat that feeds Tesserae's discovery UI.
+  Validated on hardware: full bench e2e against a local Mosquitto, then
+  against a real Tesserae server over an external Mosquitto (discovery →
+  claim → frame → sleep-interval change from the UI).
+- **Captive portal: MQTT selectable again.** The transport radio is live
+  (pre-checked from the stored mode), broker URI/username echoed on
+  re-provision, broker URI required in MQTT mode, blank broker password
+  keeps the stored one, bare `host:1883` gets `mqtt://` prepended.
+- **Clock-sane NTP for MQTT mode.** MQTT carries no `server_time`, so when
+  `time(NULL)` is implausible (`CLOCK_SANE_EPOCH`) the wake runs the
+  best-effort SNTP sync — normally once per power-on; needed for `mqtts://`
+  cert validation. REST stays NTP-free.
+- Host test `test_mqtt_parse.c` for the new pure helpers (`mqtt_parse.c`:
+  URL/int payload extraction, broker-URI normalization).
+- **DHCP hostname = device id.** The frame advertises its provisioned device
+  id to the router (e.g. `picpak-red`, `_` mapped to `-`), so the router's
+  client list matches Tesserae's device list; an unnamed frame advertises
+  `tesserae-picpak-<mac3>` so multiple PicPaks stay distinguishable
+  (previously every frame was the fixed `tesserae-picpak`).
+
+### Fixed
+- **Discover retry backs off when the server is unreachable.** A freshly
+  set-up device whose Tesserae server isn't running yet was waking every
+  30 s to hammer it; the connection-failure fallback is now 15 min. The
+  actual claiming handshake is unaffected — when the server is up but hasn't
+  claimed the device it dictates the fast cadence via `retry_after_s` — and a
+  front-button press onboards immediately once the server comes up.
+- **Token wiped on `403`, not just `401`.** The server 403s a bearer token
+  bound to a renamed/re-canonicalized device id; the device now re-pairs on
+  the next wake instead of retrying forever (parity with the reference).
+- **Relative frame URLs resolved against the server origin.** A path-only
+  `url` from `GET /frame` (possible behind a proxy) previously failed the
+  download silently every wake; absolute URLs pass through unchanged.
+- **WPA2 required when a WiFi password is stored.** The STA auth threshold
+  defaulted to OPEN, so the device would join an unencrypted rogue AP
+  broadcasting the provisioned SSID and leak the bearer token in cleartext.
+- **Portal idle timeout no longer cuts off an active user.** The 600 s
+  window used to be a hard total; it now counts only while no client is
+  associated with the setup AP and restarts when the last one leaves
+  (reference behaviour).
+- **Unreachable-broker wakes no longer burn ~5 s of idle radio.** Bench
+  measurement showed `esp_mqtt_client_stop()` waiting out esp-mqtt's
+  reconnect state (the WAIT_RECONNECT loop polls its stop flag every
+  `reconnect_timeout_ms / 2`; 5 s at the 10 s default). Auto-reconnect is
+  now disabled (a failed connect fails the wake — retry is the next wake)
+  with a 1 s reconnect poll, bringing failure-path teardown to ≤0.5 s
+  (bench-verified).
+
+### Changed
+- The 30,000-byte frame staging buffer moved out of `rest_handler.c` into a
+  shared `framebuf.{c,h}` used by both transports (only one runs per boot;
+  saves a duplicate 30 KB .bss array).
+- `FW_VERSION` bumped `0.4.0` → `0.5.0`.
+
+## 0.4.0
+
+### Fixed
+- **Firmware-review "smaller items"**
+  - Server-URL normalization now trims surrounding whitespace and trailing
+    slashes (classic paste errors; a kept trailing slash produced
+    `//api/v1/...` request URLs). Six new host-test cases in
+    `test_provision_form.c`.
+  - Portal form no longer displays a chopped server URL: the HTML-escape
+    buffer now fits the worst-case fully-escaped 159-char URL
+    (`e_server` 640 → 960, downstream `form_rest` 1600 → 1856).
+  - The captive-portal DNS hijack task now shuts down cooperatively (stop
+    flag + 250 ms recv timeout) and closes its own socket, instead of being
+    `vTaskDelete`d mid-`recvfrom` and leaking the fd.
+  - Two items resolved without code: the heartbeat `next_sleep_s` mismatch is
+    deferred to the offline-resilience milestone (any device-side fix today
+    risks worse smart-sync behaviour), and the AP-SSID MAC suffix is declined
+    (single-device household; keeps the setup splash's literal SSID accurate).
+
+### Changed
+- **Colour-block splash redesign.** The three boot splash screens now use a
+  full-height colour panel on the left with the status icon inside it and the
+  text set to its right — yellow for setup, black for paired/connected, red for
+  low battery. Regenerated from a rewritten `tools/gen_splash.py`; the compiled
+  `firmware/main/assets/splash_{setup,paired,lowbatt}.bin` blobs are updated.
+- `FW_VERSION` bumped `0.3.0` → `0.4.0`.
+
 ## 0.3.0
 
 ### Fixed
@@ -91,7 +202,8 @@
 - Renaming a device that has **already paired** (e.g. it auto-registered as
   `picpak-xxxx` before you set a custom id) isn't done from the portal: the
   existing token short-circuits pairing, and the server re-adopts the old id by
-  MAC match. Delete it in **Settings → Devices**
+  MAC match. Delete it in **Settings → Devices** (tick "also wipe" if offered)
+  and let it re-discover under the new id.
 
 ## 0.1.0-dev
 - Initial bring-up: panel driver, REST transport (discover + friendly claim),
