@@ -12,6 +12,9 @@
 #include <string.h>
 #include <strings.h>   // strcasecmp
 #include <stdio.h>
+#include <stdlib.h>    // atoi
+#include <sys/time.h>  // settimeofday
+#include <time.h>
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_mac.h"
@@ -22,12 +25,49 @@ static const char *TAG = "rest";
 static bool    s_frame_pending = false; // framebuf() holds a validated new frame for this wake
 static char    s_pending_etag[80];      // its ETag; persisted only after a successful paint
 
+// Generous headroom for the (small) JSON control responses: the status reply
+// carries next_poll_s + server_time + a config object that may grow server-side.
+// Overflow is now flagged + logged (below) instead of silently truncating.
+#define REST_RESP_MAX 2048
+
 typedef struct {
-    char *body;   // NUL-terminated accumulator (may be NULL)
-    int   len;
-    int   cap;
-    char  etag[80];
+    char    *body;          // NUL-terminated accumulator (may be NULL)
+    int      len;
+    int      cap;
+    bool     overflow;      // set when the body outgrew cap (body is truncated)
+    char     etag[80];
+    int      retry_after;   // Retry-After response header (seconds), 0 if absent
+    uint32_t server_date;   // Date response header as unix epoch, 0 if unparsed
 } resp_t;
+
+// Days since the Unix epoch for a civil date (Howard Hinnant's algorithm).
+static long days_from_civil(int y, unsigned m, unsigned d) {
+    y -= (m <= 2);
+    long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
+    unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    return era * 146097L + (long)doe - 719468L;
+}
+
+// Parse an RFC 1123 HTTP Date ("Sun, 06 Nov 1994 08:49:37 GMT") to a Unix
+// epoch. Returns 0 if it does not look like a plausible recent timestamp.
+static uint32_t parse_http_date(const char *v) {
+    static const char months[] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+    const char *comma = strchr(v, ',');
+    const char *p = comma ? comma + 1 : v;
+    while (*p == ' ') p++;
+
+    int d = 0, y = 0, hh = 0, mm = 0, ss = 0; char mon[4] = {0};
+    if (sscanf(p, "%d %3s %d %d:%d:%d", &d, mon, &y, &hh, &mm, &ss) != 6) return 0;
+    const char *mp = strstr(months, mon);
+    if (!mp || y < 2020 || y > 2100) return 0;
+    unsigned m = (unsigned)((mp - months) / 3) + 1u;
+
+    long long e = (long long)days_from_civil(y, m, (unsigned)d) * 86400LL
+                  + hh * 3600 + mm * 60 + ss;
+    return (e > 1500000000LL) ? (uint32_t)e : 0;   // sanity: past ~2017
+}
 
 static esp_err_t http_ev(esp_http_client_event_t *e) {
     resp_t *r = (resp_t *)e->user_data;
@@ -35,11 +75,17 @@ static esp_err_t http_ev(esp_http_client_event_t *e) {
     if (e->event_id == HTTP_EVENT_ON_HEADER) {
         if (strcasecmp(e->header_key, "ETag") == 0)
             strlcpy(r->etag, e->header_value, sizeof(r->etag));
+        else if (strcasecmp(e->header_key, "Retry-After") == 0)
+            r->retry_after = atoi(e->header_value);
+        else if (strcasecmp(e->header_key, "Date") == 0)
+            r->server_date = parse_http_date(e->header_value);
     } else if (e->event_id == HTTP_EVENT_ON_DATA) {
         if (r->body && r->len + e->data_len < r->cap) {
             memcpy(r->body + r->len, e->data, e->data_len);
             r->len += e->data_len;
             r->body[r->len] = '\0';
+        } else if (r->body) {
+            r->overflow = true;   // response bigger than cap; body is truncated
         }
     }
     return ESP_OK;
@@ -72,8 +118,30 @@ static int http_do(esp_http_client_method_t method, const char *url,
         esp_http_client_set_post_field(c, body_json, strlen(body_json));
     }
     esp_err_t err = esp_http_client_perform(c);
-    int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
+    // Trust the status line even when perform() reports an error. A Bearer-token
+    // API 401 arrives with no WWW-Authenticate header, which makes esp_http_client
+    // auto-handling fail with ESP_ERR_NOT_SUPPORTED — yet the 401 status + body
+    // were received. Gating on err==ESP_OK (the old code) masked it as -1, so a
+    // revoked token surfaced as a network error and was never wiped/re-paired.
+    // Only a response-less failure (no status) is a real transport error.
+    int status = esp_http_client_get_status_code(c);
     esp_http_client_cleanup(c);
+    if (status <= 0) {
+        ESP_LOGW(TAG, "%s: transport error: %s", url, esp_err_to_name(err));
+        return -1;
+    }
+    if (resp) {
+        if (resp->overflow)
+            ESP_LOGW(TAG, "%s: response truncated at %d bytes", url, resp->cap);
+        // The server's Date header is an authoritative LAN wall clock: persist it
+        // so the C3 RTC stays accurate across sleeps without an SNTP round-trip.
+        // (https/mqtts cert validity still bootstraps via NTP in main.c — TLS
+        // needs a sane clock *before* this response's Date can arrive.)
+        if (resp->server_date) {
+            struct timeval tv = { .tv_sec = (time_t)resp->server_date, .tv_usec = 0 };
+            settimeofday(&tv, NULL);
+        }
+    }
     return status;
 }
 
@@ -148,7 +216,7 @@ static int ensure_paired(const char *server) {
     char url[256];
     snprintf(url, sizeof(url), "%s/api/v1/device/%s", server,
              use_register ? "register" : "discover");
-    static char rbuf[768];
+    static char rbuf[REST_RESP_MAX];
     rbuf[0] = '\0';
     resp_t r = { .body = rbuf, .cap = sizeof(rbuf) };
     int st = http_do(HTTP_METHOD_POST, url, NULL,
@@ -162,9 +230,12 @@ static int ensure_paired(const char *server) {
         return REST_PAIR_REJECT_RETRY_S;
     }
     if (st == 429) {
+        // Honour the server's Retry-After when present; else our hard fallback
+        // (power_deep_sleep clamps the final value to the sane sleep bounds).
+        int backoff = (r.retry_after > 0) ? r.retry_after : REST_PAIR_REJECT_RETRY_S;
         ESP_LOGW(TAG, "%s rate-limited (429); backing off %ds",
-                 use_register ? "register" : "discover", REST_PAIR_REJECT_RETRY_S);
-        return REST_PAIR_REJECT_RETRY_S;
+                 use_register ? "register" : "discover", backoff);
+        return backoff;
     }
     // Register succeeds with 201, discover with 200.
     if (st != 200 && st != 201) {
@@ -211,7 +282,7 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
     char etag[80]; config_get_etag(etag, sizeof(etag));
     char url[256];
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame", server, dev_id);
-    static char fbuf[768];
+    static char fbuf[REST_RESP_MAX];
     fbuf[0] = '\0';
     resp_t fr = { .body = fbuf, .cap = sizeof(fbuf) };
     int st = http_do(HTTP_METHOD_GET, url, token, NULL, etag, NULL, &fr);
@@ -253,7 +324,7 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
     char hb[512];
     heartbeat_json(hb, sizeof(hb), (int)sleep_s, reset_reason);
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/status", server, dev_id);
-    static char sbuf[512];
+    static char sbuf[REST_RESP_MAX];
     sbuf[0] = '\0';
     resp_t sr = { .body = sbuf, .cap = sizeof(sbuf) };
     int sst = http_do(HTTP_METHOD_POST, url, token, NULL, NULL, hb, &sr);
