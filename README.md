@@ -2,15 +2,15 @@
 
 Battery-powered **ESP32-C3** firmware that turns the **PicPak** 4.2" e-paper photo frame into an
 embedded client for the [Tesserae](https://github.com/dmellok/tesserae) server. On each wake it
-connects to WiFi, pulls the current dashboard frame over REST, paints the panel, reports a heartbeat
-(battery, RSSI), and deep-sleeps.
+connects to WiFi, pulls the current dashboard frame over REST or MQTT, paints the panel, reports a
+heartbeat (battery, RSSI), and deep-sleeps.
 
 Modelled on Tesserae's battery-native reference client
 [tesserae-device-photopainter-7.3-bin](https://github.com/dmellok/tesserae-device-photopainter-7.3-bin),
 but retargeted to the PicPak's hardware: a smaller 4-colour panel, an ESP32-C3 (RISC-V) instead of an
 S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame format.
 
-> **Status:** working end-to-end over REST on real hardware. `FW_VERSION 0.3.0`.
+> **Status:** working end-to-end over REST and MQTT on real hardware. `FW_VERSION 0.5.0`.
 > See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 > Tested on PicPak **hardware revision v0.0.1**, migrating from **official firmware v1.1.11**
 > to this firmware and back (stock restore verified).
@@ -34,7 +34,7 @@ S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame 
 | Panel power | AXP2101 PMIC | direct (no PMIC) |
 | Battery sense | AXP2101 fuel gauge (I²C) | **ADC1 ch2 (GPIO2)** + ×1.45 divider, curve-fit calibrated |
 | User button | BOOT hold + RESET double-tap | **single button (GPIO2, shared with the battery ADC)** |
-| Transport | MQTT + REST | **REST** (MQTT wired but deferred) |
+| Transport | MQTT + REST | **MQTT + REST** (REST is the recommended default) |
 
 **Pin map** (`firmware/main/board.h`): EPD `SCLK 6 · MOSI 3 · MISO 4 · CS 9 · DC 8 · RST 10 · BUSY 20`
 (SPI @ 1 MHz); button `GPIO2` (active-low, shared with the battery ADC). The board also carries an
@@ -93,17 +93,22 @@ proves the backup is good. Keep one file and its checksum somewhere safe. The ba
 (serial number, radio calibration), and the first flash of this firmware overwrites it —
 someone else's backup or a shared stock image cannot fully restore your frame.
 
-### Step 2 — Flash the release build (esptool only, no ESP-IDF)
+### Step 2 — Flash the release build
 
-Each [release](../../releases) ships four files plus `SHA256SUMS`; only esptool is needed
-(`pip install esptool`):
+> **Easiest: flash from the browser — <https://picpaktesserae.pages.dev>** (Chrome or Edge).
+> Fresh install or a settings-keeping update, plus a read-only serial monitor — no tools to
+> install. The esptool commands below do the same from the command line.
+
+Each [release](../../releases) ships an all-in-one image, its four component files, and
+`SHA256SUMS`; for the command-line route only esptool is needed (`pip install esptool`):
 
 | File | Flash offset | |
 | --- | --- | --- |
+| `picpak-tesserae-firmware.bin` | `0x0` | **all-in-one image** (the four files below merged) — simplest for a first install; always wipes saved settings |
 | `bootloader.bin` | `0x0` | |
 | `partition-table.bin` | `0x8000` | |
 | `nvs_blank.bin` | `0x9000` | blank settings — guarantees the setup portal on first boot; **omit when upgrading** to keep saved WiFi/pairing |
-| `picpak_custom.bin` | `0x10000` | |
+| `picpak-tesserae-client.bin` | `0x10000` | |
 
 **Finding the port:** the C3's native USB-Serial-JTAG shows up as `/dev/cu.usbmodem*` on macOS
 (`/dev/ttyACM*` on Linux; on Windows as "USB Serial Device (COMx)" under Device Manager →
@@ -111,8 +116,17 @@ Ports (COM & LPT) — use `COM<x>`). List it with `ls /dev/cu.usbmodem*`. The nu
 USB port/hub position, so it **changes when you replug into a different port** — re-check it
 rather than assuming last time's name.
 
+First install — all-in-one image:
+
 ```sh
-python -m esptool --chip esp32c3 -p <PORT> -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 bootloader.bin 0x8000 partition-table.bin 0x9000 nvs_blank.bin 0x10000 picpak_custom.bin
+python -m esptool --chip esp32c3 -p <PORT> -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 picpak-tesserae-firmware.bin
+```
+
+Same install from the individual files (use this form **when upgrading**, leaving out
+`0x9000 nvs_blank.bin` to keep your saved settings — the all-in-one image always wipes them):
+
+```sh
+python -m esptool --chip esp32c3 -p <PORT> -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 bootloader.bin 0x8000 partition-table.bin 0x9000 nvs_blank.bin 0x10000 picpak-tesserae-client.bin
 ```
 
 If the connection drops or fails to sync, use a different USB-C **data** cable and a direct
@@ -136,14 +150,26 @@ sheet on your phone. Fill in:
 
 - **WiFi** network + password.
 - **Server URL** — the Tesserae server, either its LAN IP or `<host>.local:8765` (the C3 resolves
-  `.local` via mDNS). Use the LAN IP so it keeps working if your internet drops.
+  `.local` via mDNS). Use the LAN IP so it keeps working if your internet drops. `https://` also
+  works if the server sits behind a reverse proxy with a **publicly-trusted** certificate (e.g.
+  Let's Encrypt); self-signed certificates won't validate.
 - **Device id** *(optional)* — a custom name (`picpak-1`, validated `^[a-z][a-z0-9_-]{1,31}$`); blank
   auto-derives `picpak-<mac>`. This is the id the device claims and shows in Tesserae.
 - **Pairing code** *(optional)* — a 6-digit code from Tesserae's **Pair new device** to self-claim
   without an admin click; blank uses the discovery flow (admin clicks **Register**).
 
-Save, and it reboots into the normal cycle. Credentials precedence is `NVS → secrets.h → empty`.
-On the LAN the frame advertises its DHCP hostname as **`tesserae-picpak`** (not the default `espressif`).
+Save, and it reboots into the normal cycle. If the first boot after saving can't join the WiFi,
+the portal reopens by itself with an error banner while you're still nearby: a wrong password
+("the password looks wrong") or a wrong/nonexistent network name ("couldn't find the WiFi
+network") — fix the field and save again. Transient outages don't trigger this; an
+already-working frame never drops back to setup on a router blip. The server/broker URL is
+deliberately not checked this way: if the Tesserae server happens to be down (e.g. restarting
+its container), the frame just keeps retrying on its own and catches up when it returns — and a
+genuinely wrong URL is fixed any time via the 20 s button-hold portal.
+Credentials precedence is `NVS → secrets.h → empty`.
+On the LAN the frame advertises its DHCP hostname as its **device id** (e.g. `picpak-red` — the
+router's client list matches Tesserae's device list; `_` becomes `-`). An unnamed frame advertises
+`tesserae-picpak-<mac>` (last three MAC bytes) so multiple PicPaks stay distinguishable.
 
 ## Going back to stock
 
@@ -184,43 +210,18 @@ python -m esptool --chip esp32c3 -p <PORT> erase_region 0x9000 0x6000
 holds the factory per-device data (serial number, radio calibration), and erasing it destroys
 that data irrecoverably unless you have your full stock backup.
 
-## Building from source
-
-Requires **ESP-IDF v5.4.x**.
-
-```sh
-cd firmware
-idf.py set-target esp32c3
-idf.py build
-idf.py -p /dev/cu.usbmodemXXX flash monitor
-```
-
-For port names see [Step 2](#step-2--flash-the-release-build-esptool-only-no-esp-idf) — or drop
-`-p` entirely and let `idf.py` auto-detect.
-
-**Monitor without flashing** (watch wakes on the running firmware): `idf.py -p <PORT> monitor` —
-exit with `Ctrl+]`. The device deep-sleeps between wakes, so expect silence until a timer wake or
-a button press; logs are symbolized against your last build's ELF.
-
-`secrets.h` is optional: `firmware/main/defaults.h` includes it via `__has_include`,
-so the firmware **builds and boots without it** (empty WiFi/server defaults → it comes up in the
-captive portal). Copy `firmware/main/secrets.example.h` → `secrets.h` only if you want to bake in dev
-credentials. Note that `secrets.h` values are compiled into `.rodata` — don't publish a binary built
-with real credentials (`strings picpak_custom.bin | grep` would expose them); release builds should
-be made without `secrets.h`.
-
 ## How it works — Tesserae integration
 
 ### Transport modes
 
-The firmware speaks REST to Tesserae. The captive portal shows a REST/MQTT radio, but **MQTT is not
-implemented yet** (the fields persist to NVS and nothing reads them — it's labelled "coming soon" and
-defaults to REST).
+Both transports work; pick one in the captive portal (stored in NVS, switchable any time by
+re-provisioning). Frame **bytes** are always fetched over HTTP(S) from a URL — the transport
+only carries the signalling and telemetry.
 
 | Mode | Status |
 | --- | --- |
-| `1` REST (default) | **working** — device polls the Tesserae REST API each wake; no broker needed |
-| `0` MQTT | deferred — portal toggle present but inert until a `mqtt_handler` lands |
+| `1` REST (default, recommended) | **working** — device polls the Tesserae REST API each wake; no broker needed |
+| `0` MQTT | **working** — device reads a retained frame topic from an MQTT broker each wake; needs a broker (e.g. Mosquitto) reachable by both the server and the frame |
 
 ### Frame format
 
@@ -234,9 +235,10 @@ renderer and `picpak_client` device kind ship **built into the Tesserae server**
 
 ### Heartbeat schema
 
-Posted once per wake to `/api/v1/device/<id>/status` — after the frame GET, before any paint (the
-radio is turned off for the panel refresh, so on repaint wakes the server's "last seen" precedes the
-paint by its 13–22 s duration):
+Sent once per wake on either transport — REST `POST`s it to `/api/v1/device/<id>/status`, MQTT
+publishes it retained (QoS 1) to `tesserae/<id>/status`. Always after the frame fetch, before any
+paint (the radio is turned off for the panel refresh, so on repaint wakes the server's "last seen"
+precedes the paint by its 13–22 s duration):
 
 ```json
 {
@@ -244,7 +246,7 @@ paint by its 13–22 s duration):
   "battery_pct": 96,
   "rssi": -63,
   "ip": "10.0.20.40",
-  "fw_version": "0.3.0",
+  "fw_version": "0.5.0",
   "kind": "picpak_client",
   "panel_w": 400,
   "panel_h": 300,
@@ -260,7 +262,8 @@ each wake before WiFi/EPD load the rail.
 
 ### REST contract
 
-Every wake hits `/api/v1/device/<id>/...` over plain HTTP:
+Every wake hits `/api/v1/device/<id>/...` over HTTP — or HTTPS when the server URL uses it
+(validated against ESP-IDF's built-in CA bundle; publicly-trusted certificates only):
 
 | Method + path | Purpose |
 | --- | --- |
@@ -270,9 +273,31 @@ Every wake hits `/api/v1/device/<id>/...` over plain HTTP:
 | `POST /device/<id>/status` | `Bearer` auth. Body = the heartbeat JSON. Response `{config, next_poll_s, server_time}` — firmware applies `config.sleep_interval_s` to NVS and uses `next_poll_s` for this cycle's deep sleep. |
 
 The `device_token` is persisted to NVS on first pairing; later wakes go straight to the frame GET. A
-`401` on any request wipes the token and forces re-pairing.
+`401` or `403` on any authenticated request wipes the token and forces re-pairing. A relative `url`
+in the frame response is resolved against the server origin.
 
-### Splash screens
+### MQTT contract
+
+One broker session per wake. Topics live under `tesserae/<device_id>/` (`device_id` from the
+portal, or `picpak-<mac3>` when left blank — same fallback as REST):
+
+| Topic | Direction | Payload |
+| --- | --- | --- |
+| `frame/bin` | server → device, **retained** | URL of the current frame binary — bare URL or `{"url": …}` JSON, both accepted |
+| `config` | server → device, retained | `{"sleep_interval_s": N}` (validated 30 s – 7 d, saved to NVS) |
+| `status` | device → broker, retained, QoS 1 | the heartbeat JSON above |
+
+The wake: connect (optional username/password, `mqtts://` supported) → subscribe both topics →
+wait ≤ 8 s for the retained frame message → skip if its URL matches the last painted one (the
+MQTT equivalent of REST's `304`; the server's URLs are content-addressed) → else download over
+HTTP and validate exactly 30 000 bytes → publish the heartbeat → disconnect gracefully → radio
+off → paint.
+
+There is no pairing token on MQTT: the retained heartbeat is what makes an unclaimed frame appear
+under Tesserae's **Settings → Devices** for the admin to claim. The session carries a
+**non-retained** last-will (`{"state":"offline"}`) so an ungraceful drop is visible to live
+subscribers without ever clobbering the retained heartbeat. Wakes that find the broker down keep
+the last image and retry on the next cycle — the frame never blanks.
 
 Three panel screens (baked 2 bpp blobs, generated by `tools/gen_splash.py`, embedded via CMake):
 
@@ -293,14 +318,20 @@ Three panel screens (baked 2 bpp blobs, generated by `tools/gen_splash.py`, embe
   The decision is a pure, host-tested FSM.
 - **Battery reading** is taken once early each wake (pre-load) and cached, so the reported value is
   accurate and there's a single ADC read per cycle.
-- **Radio off during the panel refresh.** All network I/O (frame GET + heartbeat POST) finishes
-  first, then WiFi stops, then the panel paints — the radio never idles (~80 mA) through the
-  13–22 s refresh, which is also the board's worst-case rail load (brownout margin).
+- **Radio off during the panel refresh.** All network I/O (frame fetch + heartbeat, on either
+  transport) finishes first, then WiFi stops, then the panel paints — the radio never idles
+  (~80 mA) through the 13–22 s refresh, which is also the board's worst-case rail load (brownout
+  margin). In MQTT mode the broker session is closed gracefully first, so the last-will never
+  fires on a normal wake.
 - **Lazy panel init.** The EPD is powered and initialized only when a new frame actually arrived;
-  on the common 304 "unchanged" wake the panel is never touched.
-- **No NTP on the wake path.** The C3 keeps RTC time across deep sleep, and nothing in the current
-  build consumes wall-clock time — so there's no blocking SNTP exchange per wake (the reference
-  firmware needs one only as a PMIC workaround).
+  on the common "unchanged" wake (REST `304` / MQTT retained-URL match) the panel is never touched.
+- **Single broker session per wake (MQTT).** Fetch, config, and heartbeat share one connection —
+  no second connect and no post-paint WiFi reconnect (the reference firmware pays both). A failed
+  broker connect tears down in ~0.5 s instead of esp-mqtt's default multi-second reconnect wait.
+- **No NTP on the wake path.** The C3 keeps RTC time across deep sleep. REST mode over plain http
+  never syncs (the server supplies time context); MQTT mode — and REST with an `https://` server
+  URL — syncs only when the clock is implausible, effectively once per battery insertion, as
+  required for TLS certificate validity checks.
 
 ## Project layout
 
@@ -316,16 +347,23 @@ picpak-tesserae-client/
 │       ├── power.{c,h}          # battery ADC, deep sleep, boot-button gesture
 │       ├── battpct.h            # pure mV→% Li-Po curve (host-tested)
 │       ├── lowbatt*.{c,h}       # low-battery gate (pure FSM + RTC glue)
-│       ├── config_store.{c,h}   # NVS config (creds, token, etag, sleep) with secrets.h fallback
-│       ├── wifi_manager.{c,h}   # STA connect (+ SNTP helper, off the wake path)
+│       ├── config_store.{c,h}   # NVS config (creds, token, etag, broker, sleep) with secrets.h fallback
+│       ├── wifi_manager.{c,h}   # STA connect (+ SNTP helper for MQTT-mode clock sanity)
 │       ├── provisioning*.{c,h}  # SoftAP captive portal + pure form parser
 │       ├── splash.{c,h}         # embedded setup / paired / low-batt screens
 │       ├── image_fetcher.{c,h}  # HTTP frame download
-│       ├── rest_handler.{c,h}   # discover/register + frame GET + status POST
+│       ├── framebuf.{c,h}       # 30 KB frame staging buffer shared by both transports
+│       ├── rest_handler.{c,h}   # REST: discover/register + frame GET + status POST
+│       ├── mqtt_handler.{c,h}   # MQTT: retained frame/config read + heartbeat publish, one session
+│       ├── mqtt_parse.{c,h}     # pure payload/URI helpers (+ host test)
 │       └── heartbeat.{c,h}      # battery / RSSI / IP / panel JSON
-└── tools/
-    ├── gen_splash.py           # generate the 2 bpp splash blobs
-
+├── firmware_release/            # flashable artifacts: all-in-one image, parts, SHA256SUMS
+├── tesserae-picpak-flash-firmware-web/  # browser flasher (picpaktesserae.pages.dev)
+├── tools/
+│   ├── gen_splash.py            # generate the 2 bpp splash blobs
+│   └── mock_server.py           # minimal Tesserae stand-in for bench tests
+├── docs/                        # design notes, guides, feature backlog
+└── LICENSE                      # AGPL-3.0
 ```
 
 ## Disclaimer
@@ -344,8 +382,8 @@ device.
 
 ## Credits
 
-The wake state machine, REST/heartbeat contract, captive-portal provisioning, and NVS schema follow
-Tesserae's reference client
+The wake state machine, REST/MQTT/heartbeat contracts, captive-portal provisioning, and NVS schema
+follow Tesserae's reference client
 [tesserae-device-photopainter-7.3-bin](https://github.com/dmellok/tesserae-device-photopainter-7.3-bin).
 The panel init sequence and 4-colour packing were reverse-engineered for the PicPak's specific 400×300
 BWRY hardware.
