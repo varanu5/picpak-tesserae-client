@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.6.0
+
+### Fixed
+- **Revoked-token recovery (REST).** `http_do()` now trusts the HTTP status
+  line even when `esp_http_client_perform()` returns an error. A Bearer-token
+  API answers a revoked/expired token with a **401 carrying no
+  `WWW-Authenticate` header**, which the client's auto-handling reports as
+  `ESP_ERR_NOT_SUPPORTED`; the old code gated the status on `err == ESP_OK`
+  and so saw the 401 as a transport error (`-1`), never wiping the token —
+  the device would loop forever unauthenticated. It now reads the real status
+  and only treats a response-less failure as a transport error, so a 401/403
+  on `/frame` or `/status` correctly wipes the token and re-pairs next wake.
+  Confirmed on hardware (the tell-tale `HTTP_CLIENT: This request requires
+  authentication…` log alongside `GET /frame -> 401 … wiping token`).
+
+### Changed
+- **Wall clock from the server `Date` header (REST).** Each REST response's
+  `Date` header is parsed (RFC 1123 → epoch) and applied with
+  `settimeofday()`, keeping the C3 RTC accurate across sleeps without an SNTP
+  round-trip. The `main.c` NTP gates for `https`/`mqtts` cert-validity
+  bootstrap are untouched (TLS still needs a sane clock before the response's
+  `Date` can arrive).
+- **`Retry-After` honoured on 429.** A rate-limited discover/register now
+  backs off by the server's `Retry-After` seconds when present, instead of
+  always using the fixed one-hour fallback (kept for when the header is
+  absent; the final value is still clamped to the sane sleep bounds).
+- **Control-response buffers hardened.** The discover/frame/status JSON
+  response buffers grew to a shared 2 KB (`REST_RESP_MAX`) with explicit
+  overflow detection and a truncation warning, replacing the previous silent
+  truncation of a larger-than-expected `config` object.
+
 ## 0.5.0
 
 ### Added
