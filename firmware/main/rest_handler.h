@@ -1,9 +1,11 @@
 // rest_handler.h — Tesserae REST transport (one wake cycle).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include "esp_system.h"   // esp_reset_reason_t
 
 #include <stdint.h>
+#include <stdbool.h>
 
 // Run one REST wake cycle (WiFi must already be up): ensure token
 // (discover/register) -> GET /frame (ETag/304/204) -> download + validate a new

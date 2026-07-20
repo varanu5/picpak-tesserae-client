@@ -1,5 +1,6 @@
 // lowbatt_core.h — pure low-battery gate decision (host-testable; no hardware/NVS).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 //
 // One decision per wake. Below ARM (after a short debounce streak) the device locks into a
 // low-power poll; while locked it stays low until the cell recovers — either absolutely

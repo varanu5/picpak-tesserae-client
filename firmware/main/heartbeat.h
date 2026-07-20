@@ -1,5 +1,6 @@
 // heartbeat.h — build the Tesserae status JSON.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include "esp_system.h"   // esp_reset_reason_t
 #include <stddef.h>

@@ -1,5 +1,6 @@
 // power.c — battery ADC, deep sleep, boot button window.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "power.h"
 #include "board.h"
 #include "defaults.h"

@@ -1,5 +1,6 @@
 // test_provision_form.c — host unit test for pure portal form helpers
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
@@ -41,6 +42,26 @@ int main(void) {
     strcpy(u, "ftp://x");
     assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_BADSCHEME);
     strcpy(u, "");
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_EMPTY);
+
+    // normalize_server_url: paste hygiene — trim whitespace, strip trailing '/'
+    // (a kept trailing slash yields "//api/v1/..." URLs downstream)
+    strcpy(u, "http://x:8765/");
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_OK
+           && strcmp(u, "http://x:8765") == 0);
+    strcpy(u, "http://x:8765///");                       // multiple slashes
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_OK
+           && strcmp(u, "http://x:8765") == 0);
+    strcpy(u, "  http://x:8765 \t");                     // surrounding whitespace
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_OK
+           && strcmp(u, "http://x:8765") == 0);
+    strcpy(u, "tesserae.local:8765/ ");                  // bare host + both defects
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_OK
+           && strcmp(u, "http://tesserae.local:8765") == 0);
+    strcpy(u, "http://x/base/");                         // path kept, slash stripped
+    assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_OK
+           && strcmp(u, "http://x/base") == 0);
+    strcpy(u, "   ");                                    // whitespace-only == empty
     assert(provform_normalize_server_url(u, sizeof u) == PROVFORM_URL_EMPTY);
 
     // device_id validation: ^[a-z][a-z0-9_-]{1,31}$

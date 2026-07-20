@@ -1,5 +1,6 @@
 // image_fetcher.h — download a frame URL into a caller buffer.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include <stdint.h>
 #include <stddef.h>

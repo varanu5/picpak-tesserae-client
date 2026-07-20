@@ -1,5 +1,6 @@
 // lowbatt.h — RTC/hardware glue around the pure FSM in lowbatt_core.h.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include <stdint.h>
 #include "esp_sleep.h"

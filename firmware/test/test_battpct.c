@@ -1,5 +1,6 @@
 // test_battpct.c — host unit test for the battery %-curve (PhotoPainter piecewise curve).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include <assert.h>
 #include <stdio.h>
 #include "battpct.h"

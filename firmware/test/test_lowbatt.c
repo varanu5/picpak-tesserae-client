@@ -1,6 +1,7 @@
 // test_lowbatt.c — host unit test for the pure low-battery gate FSM (lowbatt_core.h).
 // cc firmware/test/test_lowbatt.c -Ifirmware/main -o /tmp/t && /tmp/t
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include <assert.h>
 #include <stdio.h>
 #include "lowbatt_core.h"

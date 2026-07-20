@@ -1,5 +1,6 @@
 // config_store.c — NVS-backed config with secrets.h fallbacks.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "config_store.h"
 #include "defaults.h"
 
@@ -90,6 +91,21 @@ void config_set_mqtt(const char *uri, const char *user, const char *pass) {
     if (uri)  nvs_set_str_commit(NS_REST, "mqtt_uri",  uri);
     if (user) nvs_set_str_commit(NS_REST, "mqtt_user", user);
     if (pass && pass[0]) nvs_set_str_commit(NS_REST, "mqtt_pass", pass);
+}
+void config_get_mqtt(char *uri, size_t uri_sz, char *user, size_t user_sz,
+                     char *pass, size_t pass_sz) {
+    if (nvs_get_str_or_empty(NS_REST, "mqtt_uri", uri, uri_sz) == 0)
+        strlcpy(uri, MQTT_DEFAULT_URI, uri_sz);
+    if (nvs_get_str_or_empty(NS_REST, "mqtt_user", user, user_sz) == 0)
+        strlcpy(user, MQTT_DEFAULT_USER, user_sz);
+    if (nvs_get_str_or_empty(NS_REST, "mqtt_pass", pass, pass_sz) == 0)
+        strlcpy(pass, MQTT_DEFAULT_PASS, pass_sz);
+}
+void config_get_frame_url(char *out, size_t out_sz) {
+    nvs_get_str_or_empty(NS_REST, "frame_url", out, out_sz);
+}
+void config_set_frame_url(const char *url) {
+    nvs_set_str_commit(NS_REST, "frame_url", url ? url : "");
 }
 void config_set_transport(uint8_t mode) {
     nvs_handle_t h;

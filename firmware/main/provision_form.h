@@ -1,5 +1,6 @@
 // provision_form.h — pure (ESP-free) form parsing/validation for the portal.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include <stddef.h>
 #include <stdbool.h>

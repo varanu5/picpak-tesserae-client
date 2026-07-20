@@ -1,5 +1,6 @@
 // fb2bpp.h — pure 2bpp framebuffer helpers (host-testable, no ESP deps)
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include <stdint.h>
 

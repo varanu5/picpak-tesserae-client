@@ -1,5 +1,6 @@
 // epd_init_seq.h — PicPak UC81xx-class panel init sequences
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 //
 // Recovered byte-exact from stock-firmware reverse-engineering (see
 // project_panel_driver_re). Row format: { cmd, n_data, data[0..n-1] }.

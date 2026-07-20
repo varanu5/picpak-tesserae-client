@@ -1,5 +1,6 @@
 // splash.h — provisioning splash screens painted to the panel.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include "esp_err.h"
 

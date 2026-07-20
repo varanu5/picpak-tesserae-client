@@ -1,5 +1,6 @@
 // config_store.h — NVS-backed config with secrets.h fallbacks.
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 #include "esp_err.h"
 #include <stdint.h>
@@ -29,13 +30,20 @@ void config_set_etag(const char *etag);
 uint32_t config_get_sleep_s(uint32_t fallback);
 void     config_set_sleep_s(uint32_t seconds);
 
-// --- portal write path (M4) ---
+// --- portal write path ---
 void config_set_wifi(const char *ssid, const char *pass);   // blank/NULL pass keeps existing
 void config_set_server_url(const char *url);
 void config_set_transport(uint8_t mode);                    // 0=MQTT, 1=REST
 uint8_t config_get_transport(uint8_t fallback);
 void config_set_pairing_code(const char *code);
 void config_get_pairing_code(char *out, size_t out_sz);   // empty if none set
-void config_set_mqtt(const char *uri, const char *user, const char *pass);  // inert until M5
+void config_set_mqtt(const char *uri, const char *user, const char *pass);  // blank/NULL pass keeps existing
+// MQTT broker config (NVS -> secrets -> ""). All outputs always NUL-terminated.
+void config_get_mqtt(char *uri, size_t uri_sz, char *user, size_t user_sz,
+                     char *pass, size_t pass_sz);
+// Last successfully painted frame URL (MQTT skip-check; separate from the REST
+// ETag so a transport switch causes one harmless refetch, never a false skip).
+void config_get_frame_url(char *out, size_t out_sz);
+void config_set_frame_url(const char *url);
 void config_set_paired_pending(bool pending);
 bool config_take_paired_pending(void);   // returns flag, then clears it (one-shot)

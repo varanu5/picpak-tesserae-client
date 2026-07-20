@@ -3,6 +3,7 @@
 // steep near empty). Chosen over the stock PicPak linear LUT for granular high-end readings
 // (100% only at 4200mV, so a nearly-full cell reads 9x% instead of pegging at 100%).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
 
 static inline int battpct(int mv) {

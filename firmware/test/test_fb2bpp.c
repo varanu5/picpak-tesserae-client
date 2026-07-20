@@ -1,5 +1,6 @@
 // test_fb2bpp.c — host unit test for the pure framebuffer packer
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include <assert.h>
 #include <stdio.h>
 #include "fb2bpp.h"

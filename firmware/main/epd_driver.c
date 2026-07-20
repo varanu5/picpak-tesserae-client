@@ -1,5 +1,6 @@
 // epd_driver.c — PicPak UC81xx-class e-paper SPI driver
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "epd_driver.h"
 #include "epd_init_seq.h"
 #include "board.h"

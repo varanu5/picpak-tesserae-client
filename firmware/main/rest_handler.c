@@ -1,9 +1,11 @@
 // rest_handler.c — Tesserae REST transport (one wake cycle).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "rest_handler.h"
 #include "config_store.h"
 #include "defaults.h"
 #include "image_fetcher.h"
+#include "framebuf.h"
 #include "heartbeat.h"
 #include "board.h"
 
@@ -11,13 +13,13 @@
 #include <strings.h>   // strcasecmp
 #include <stdio.h>
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "cJSON.h"
 
 static const char *TAG = "rest";
-static uint8_t s_frame[EPD_FB_BYTES];   // static SRAM frame buffer (no PSRAM)
-static bool    s_frame_pending = false; // s_frame holds a validated new frame for this wake
+static bool    s_frame_pending = false; // framebuf() holds a validated new frame for this wake
 static char    s_pending_etag[80];      // its ETag; persisted only after a successful paint
 
 typedef struct {
@@ -50,6 +52,11 @@ static int http_do(esp_http_client_method_t method, const char *url,
         .url = url, .method = method, .timeout_ms = 15000,
         .event_handler = http_ev, .user_data = resp,
     };
+    // CA bundle only for TLS: attaching it on plain http can mis-configure the
+    // client (reference-observed ESP_ERR_NOT_SUPPORTED). Publicly-trusted certs
+    // only (e.g. Let's Encrypt behind a reverse proxy); self-signed won't pass.
+    if (strncmp(url, "https://", 8) == 0)
+        cfg.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     char auth[160];
@@ -68,6 +75,24 @@ static int http_do(esp_http_client_method_t method, const char *url,
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(c) : -1;
     esp_http_client_cleanup(c);
     return status;
+}
+
+// Resolve a (possibly relative) frame URL against the server origin — the
+// /frame endpoint may return a path-only url (ported from the reference's
+// resolve_url; our server returns absolute URLs today, but a proxy or a server
+// change must not turn into a silent every-wake fetch failure).
+static void resolve_url(const char *server, const char *u, char *out, size_t cap) {
+    if (strncmp(u, "http://", 7) == 0 || strncmp(u, "https://", 8) == 0) {
+        snprintf(out, cap, "%s", u);
+        return;
+    }
+    char origin[160];
+    snprintf(origin, sizeof(origin), "%s", server);
+    char *p = strstr(origin, "://");
+    p = p ? p + 3 : origin;
+    char *sl = strchr(p, '/');
+    if (sl) *sl = '\0';                      // drop any path on the server_url
+    snprintf(out, cap, "%s%s%s", origin, (u[0] == '/') ? "" : "/", u);
 }
 
 static void apply_config_sleep(cJSON *config) {
@@ -196,7 +221,9 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
         cJSON *j = cJSON_Parse(fbuf);
         cJSON *urlj = j ? cJSON_GetObjectItemCaseSensitive(j, "url") : NULL;
         if (cJSON_IsString(urlj) && urlj->valuestring[0]) {
-            int n = image_fetch(urlj->valuestring, s_frame, sizeof(s_frame));
+            char fullurl[320];
+            resolve_url(server, urlj->valuestring, fullurl, sizeof(fullurl));
+            int n = image_fetch(fullurl, framebuf(), EPD_FB_BYTES);
             if (n == EPD_FB_BYTES) {
                 // Not painted here: main paints after wifi_stop() so the radio
                 // never idles through (or brown-outs) the 13-22 s EPD refresh.
@@ -214,8 +241,10 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
         ESP_LOGI(TAG, "frame unchanged (304); skipping paint");
     } else if (st == 204) {
         ESP_LOGI(TAG, "no frame rendered yet (204)");
-    } else if (st == 401) {
-        ESP_LOGW(TAG, "401; wiping token to re-pair next wake");
+    } else if (st == 401 || st == 403) {
+        // 403 too: the server 403s a token bound to a renamed/re-canonicalized
+        // device id (reference behaviour) — without the wipe we'd retry forever.
+        ESP_LOGW(TAG, "%d; wiping token to re-pair next wake", st);
         config_set_device_token("");
     }
 
@@ -239,17 +268,17 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
             if (cJSON_IsNumber(np) && np->valueint > 0) next = (uint32_t)np->valueint;
             cJSON_Delete(j);
         }
-    } else if (sst == 401) {
-        // Same healing as the /frame 401: a token revoked between the two calls
-        // would otherwise take an extra full sleep cycle to re-pair.
-        ESP_LOGW(TAG, "status 401; wiping token to re-pair next wake");
+    } else if (sst == 401 || sst == 403) {
+        // Same healing as the /frame 401/403: a token revoked between the two
+        // calls would otherwise take an extra full sleep cycle to re-pair.
+        ESP_LOGW(TAG, "status %d; wiping token to re-pair next wake", sst);
         config_set_device_token("");
     }
     return (int)next;
 }
 
 const uint8_t *rest_pending_frame(void) {
-    return s_frame_pending ? s_frame : NULL;
+    return s_frame_pending ? framebuf() : NULL;
 }
 
 void rest_frame_painted(void) {

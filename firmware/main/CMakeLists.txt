@@ -8,6 +8,9 @@ idf_component_register(
          "image_fetcher.c"
          "heartbeat.c"
          "rest_handler.c"
+         "mqtt_parse.c"
+         "mqtt_handler.c"
+         "framebuf.c"
          "provision_form.c"
          "provisioning.c"
          "splash.c"
@@ -15,4 +18,4 @@ idf_component_register(
     INCLUDE_DIRS "."
     EMBED_FILES "assets/splash_setup.bin" "assets/splash_paired.bin" "assets/splash_lowbatt.bin"
     REQUIRES driver nvs_flash esp_wifi esp_netif esp_http_client esp_http_server
-             json esp_adc lwip esp_hw_support)
+             json esp_adc lwip esp_hw_support mqtt)

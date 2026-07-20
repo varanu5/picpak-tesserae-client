@@ -1,5 +1,6 @@
 // provision_form.c — pure form parsing/validation (no ESP deps).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "provision_form.h"
 #include <string.h>
 #include <stdlib.h>
@@ -91,16 +92,32 @@ bool provform_device_id_valid(const char *id) {
     return true;
 }
 
-// Normalize a server URL in-place: bare host:port gets http:// prepended;
-// http:// and https:// pass through; any other scheme is rejected; empty rejected.
+// Normalize a server URL in-place: surrounding whitespace and trailing '/' are
+// stripped (classic paste errors — a kept trailing slash yields "//api/v1/..."
+// URLs downstream); bare host:port gets http:// prepended; http:// and https://
+// pass through; any other scheme is rejected; empty (incl. whitespace-only) rejected.
 provform_url_result_t provform_normalize_server_url(char *url, size_t url_sz) {
-    if (!url || url[0] == '\0') return PROVFORM_URL_EMPTY;
+    if (!url) return PROVFORM_URL_EMPTY;
+
+    // Trim leading/trailing whitespace, then trailing slashes.
+    char *s = url;
+    while (*s == ' ' || *s == '\t' || *s == '\r' || *s == '\n') s++;
+    size_t n = strlen(s);
+    while (n > 0 && (s[n-1] == ' ' || s[n-1] == '\t' || s[n-1] == '\r' || s[n-1] == '\n'))
+        n--;
+    while (n > 0 && s[n-1] == '/' &&
+           !(n >= 3 && s[n-2] == '/' && s[n-3] == ':'))   // never eat a bare "scheme://"
+        n--;
+    memmove(url, s, n);
+    url[n] = '\0';
+
+    if (url[0] == '\0') return PROVFORM_URL_EMPTY;
     if (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0)
         return PROVFORM_URL_OK;
     if (strstr(url, "://") != NULL) return PROVFORM_URL_BADSCHEME;
     char tmp[192];
-    int n = snprintf(tmp, sizeof tmp, "http://%s", url);
-    if (n <= 0 || (size_t)n >= url_sz) return PROVFORM_URL_BADSCHEME;
+    int m = snprintf(tmp, sizeof tmp, "http://%s", url);
+    if (m <= 0 || (size_t)m >= url_sz) return PROVFORM_URL_BADSCHEME;
     strncpy(url, tmp, url_sz - 1);
     url[url_sz - 1] = '\0';
     return PROVFORM_URL_OK;

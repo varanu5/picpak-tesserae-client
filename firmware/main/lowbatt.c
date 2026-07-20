@@ -1,5 +1,6 @@
 // lowbatt.c — RTC-RAM glue (fixed thresholds; gate ON by default; no USB-SOF in v1).
 // SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "lowbatt.h"
 #include "esp_attr.h"   // RTC_DATA_ATTR
 
