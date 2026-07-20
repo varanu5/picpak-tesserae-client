@@ -357,12 +357,8 @@ picpak-tesserae-client/
 │       ├── mqtt_handler.{c,h}   # MQTT: retained frame/config read + heartbeat publish, one session
 │       ├── mqtt_parse.{c,h}     # pure payload/URI helpers (+ host test)
 │       └── heartbeat.{c,h}      # battery / RSSI / IP / panel JSON
-├── firmware_release/            # flashable artifacts: all-in-one image, parts, SHA256SUMS
-├── tesserae-picpak-flash-firmware-web/  # browser flasher (picpaktesserae.pages.dev)
 ├── tools/
 │   ├── gen_splash.py            # generate the 2 bpp splash blobs
-│   └── mock_server.py           # minimal Tesserae stand-in for bench tests
-├── docs/                        # design notes, guides, feature backlog
 └── LICENSE                      # AGPL-3.0
 ```
 
