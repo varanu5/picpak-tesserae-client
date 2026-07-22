@@ -54,6 +54,43 @@ bool config_get_wifi(char *ssid, size_t ssid_sz, char *pass, size_t pass_sz) {
     return ssid[0] != '\0';
 }
 
+// --- fast-connect AP hint (BSSID + channel), stored in the wifi namespace ---
+bool config_get_ap_hint(uint8_t bssid[6], uint8_t *chan) {
+    nvs_handle_t h;
+    if (nvs_open(NS_WIFI, NVS_READONLY, &h) != ESP_OK) return false;
+    size_t l = 6; uint8_t c = 0;
+    bool ok = (nvs_get_blob(h, "ap_bssid", bssid, &l) == ESP_OK && l == 6 &&
+               nvs_get_u8(h, "ap_chan", &c) == ESP_OK && c >= 1 && c <= 14);
+    nvs_close(h);
+    if (ok && chan) *chan = c;
+    return ok;
+}
+
+void config_set_ap_hint(const uint8_t bssid[6], uint8_t chan) {
+    nvs_handle_t h;
+    if (nvs_open(NS_WIFI, NVS_READWRITE, &h) != ESP_OK) return;
+    // Skip the write when unchanged, to spare flash wear across wakes.
+    uint8_t cur_b[6]; size_t l = 6; uint8_t cur_c = 0;
+    bool same = (nvs_get_blob(h, "ap_bssid", cur_b, &l) == ESP_OK && l == 6 &&
+                 memcmp(cur_b, bssid, 6) == 0 &&
+                 nvs_get_u8(h, "ap_chan", &cur_c) == ESP_OK && cur_c == chan);
+    if (!same) {
+        nvs_set_blob(h, "ap_bssid", bssid, 6);
+        nvs_set_u8(h, "ap_chan", chan);
+        nvs_commit(h);
+    }
+    nvs_close(h);
+}
+
+void config_clear_ap_hint(void) {
+    nvs_handle_t h;
+    if (nvs_open(NS_WIFI, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_erase_key(h, "ap_bssid");
+    nvs_erase_key(h, "ap_chan");
+    nvs_commit(h);
+    nvs_close(h);
+}
+
 void config_get_server_url(char *out, size_t out_sz) {
     if (nvs_get_str_or_empty(NS_REST, "server_url", out, out_sz) == 0)
         strlcpy(out, REST_DEFAULT_SERVER_URL, out_sz);

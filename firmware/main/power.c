@@ -84,23 +84,31 @@ bool power_button_held(void) {
     return gpio_get_level(PIN_BTN) == 0;   // active-low
 }
 
-bool power_boot_gesture(void) {
-    if (!power_button_held()) return false;
-    ESP_LOGW(TAG, "button held at boot: flash window %d ms (hold %d ms for provisioning)",
-             BOOT_HOLD_WINDOW_MS, PROVISION_HOLD_MS);
+btn_gesture_t power_boot_gesture(void) {
+    if (!power_button_held()) return BTN_GESTURE_NONE;
+    ESP_LOGW(TAG, "button held at boot: flash window %d ms (refresh at %d ms, provisioning at %d ms)",
+             BOOT_HOLD_WINDOW_MS, BTN_REFRESH_HOLD_MS, PROVISION_HOLD_MS);
     int waited = 0;
     while (power_button_held()) {
         vTaskDelay(pdMS_TO_TICKS(200));
         waited += 200;
         if (waited >= PROVISION_HOLD_MS) {
             ESP_LOGW(TAG, "held %d ms -> entering provisioning", waited);
-            return true;
+            return BTN_GESTURE_PROVISION;
         }
         if (waited >= BOOT_HOLD_WINDOW_MS && waited % 1000 == 0)
             ESP_LOGW(TAG, "still holding (%d ms)... keep holding to %d for provisioning",
                      waited, PROVISION_HOLD_MS);
     }
-    return false;
+    // Released before the provisioning threshold. A deliberate >= 3 s hold is a
+    // refresh request; a quick tap is just a normal wake-and-check. Classified
+    // here on RELEASE, so a continuous hold to 20 s hits provisioning above and
+    // never trips a refresh on its way there.
+    if (waited >= BTN_REFRESH_HOLD_MS) {
+        ESP_LOGW(TAG, "held %d ms -> refresh request", waited);
+        return BTN_GESTURE_REFRESH;
+    }
+    return BTN_GESTURE_NONE;
 }
 
 void power_deep_sleep(uint32_t seconds) {

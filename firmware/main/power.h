@@ -11,9 +11,17 @@ int  power_battery_pct(int mv); // 0..100 via a Li-Po discharge curve (pass mv f
 
 bool power_button_held(void);  // GPIO2 currently pressed (active-low)
 
+// Boot button-hold gesture, classified on RELEASE (see thresholds in defaults.h).
+typedef enum {
+    BTN_GESTURE_NONE = 0,   // no hold / quick tap -> normal wake + check
+    BTN_GESTURE_REFRESH,    // held >= BTN_REFRESH_HOLD_MS, released before provisioning
+    BTN_GESTURE_PROVISION,  // held >= PROVISION_HOLD_MS -> enter captive portal
+} btn_gesture_t;
+
 // Run the boot-hold window: block while the button is held at boot (keeping USB
-// enumerated for re-flashing). Returns true if held >= PROVISION_HOLD_MS (caller
-// should enter provisioning); false otherwise (normal boot / short flash-hold).
-bool power_boot_gesture(void);
+// enumerated for re-flashing), then classify the gesture by how long it was held.
+// A held-to-20s returns PROVISION; a released 3-20s hold returns REFRESH; a quick
+// tap / no hold returns NONE.
+btn_gesture_t power_boot_gesture(void);
 
 void power_deep_sleep(uint32_t seconds);   // timer + button wake, then sleep (no return)

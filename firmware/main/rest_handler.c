@@ -28,7 +28,7 @@ static char    s_pending_etag[80];      // its ETag; persisted only after a succ
 // Generous headroom for the (small) JSON control responses: the status reply
 // carries next_poll_s + server_time + a config object that may grow server-side.
 // Overflow is now flagged + logged (below) instead of silently truncating.
-#define REST_RESP_MAX 2048
+#define REST_RESP_MAX 4096
 
 typedef struct {
     char    *body;          // NUL-terminated accumulator (may be NULL)
@@ -266,7 +266,8 @@ static int ensure_paired(const char *server) {
     return retry;
 }
 
-int rest_run_loop(esp_reset_reason_t reset_reason) {
+int rest_run_loop(esp_reset_reason_t reset_reason,
+                  bool button_refresh, uint32_t button_event_id) {
     char server[160];
     config_get_server_url(server, sizeof(server));
     if (!server[0]) { ESP_LOGE(TAG, "no server URL"); return config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S); }
@@ -281,12 +282,26 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
     // --- GET /frame ---
     char etag[80]; config_get_etag(etag, sizeof(etag));
     char url[256];
-    snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame", server, dev_id);
+    int un = snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame", server, dev_id);
+    if (button_refresh && un > 0 && un < (int)sizeof(url)) {
+        // A 3 s button hold: ask the server to re-render the current page (fresh
+        // data — e.g. latest weather) via ?button=refresh, and drop If-None-Match
+        // so the re-render comes back as 200 (a repaint), not a 304. The server
+        // dedups this press by button_event_id across /frame + the /status fallback.
+        etag[0] = '\0';
+        snprintf(url + un, sizeof(url) - un, "?button=refresh&button_event_id=%u",
+                 (unsigned)button_event_id);
+        ESP_LOGI(TAG, "button refresh: /frame?button=refresh (event %u)", (unsigned)button_event_id);
+    }
     static char fbuf[REST_RESP_MAX];
     fbuf[0] = '\0';
     resp_t fr = { .body = fbuf, .cap = sizeof(fbuf) };
     int st = http_do(HTTP_METHOD_GET, url, token, NULL, etag, NULL, &fr);
     ESP_LOGI(TAG, "GET /frame -> %d", st);
+    // The server dispatches the button action before the frame lookup, so any of
+    // 200/304/204 proves it received the press. Only these count as acknowledged;
+    // an auth/network failure keeps /status as the fallback delivery path.
+    bool frame_acked = (st == 200 || st == 304 || st == 204);
 
     if (st == 200) {
         cJSON *j = cJSON_Parse(fbuf);
@@ -322,7 +337,11 @@ int rest_run_loop(esp_reset_reason_t reset_reason) {
     // --- POST /status ---
     uint32_t sleep_s = config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
     char hb[512];
-    heartbeat_json(hb, sizeof(hb), (int)sleep_s, reset_reason);
+    // Fallback delivery: only report the button on /status if /frame didn't
+    // acknowledge it (auth/network failure before the server dispatched it). The
+    // server dedups by button_event_id, so a stray double-send is harmless.
+    const char *btn = (button_refresh && !frame_acked) ? "refresh" : NULL;
+    heartbeat_json(hb, sizeof(hb), (int)sleep_s, reset_reason, btn, button_event_id);
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/status", server, dev_id);
     static char sbuf[REST_RESP_MAX];
     sbuf[0] = '\0';

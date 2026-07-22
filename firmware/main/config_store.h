@@ -30,6 +30,14 @@ void config_set_etag(const char *etag);
 uint32_t config_get_sleep_s(uint32_t fallback);
 void     config_set_sleep_s(uint32_t seconds);
 
+// Fast-connect AP hint: the last associated AP's BSSID (6 bytes) + primary
+// channel, cached in the "wifi" namespace to skip the scan on the next wake.
+// get returns false when unset/invalid; set skips the write when unchanged (flash
+// wear); clear drops it (stale hint -> full-scan fallback re-caches the real AP).
+bool config_get_ap_hint(uint8_t bssid[6], uint8_t *chan);
+void config_set_ap_hint(const uint8_t bssid[6], uint8_t chan);
+void config_clear_ap_hint(void);
+
 // --- portal write path ---
 void config_set_wifi(const char *ssid, const char *pass);   // blank/NULL pass keeps existing
 void config_set_server_url(const char *url);

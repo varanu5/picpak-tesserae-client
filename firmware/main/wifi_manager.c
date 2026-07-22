@@ -21,6 +21,9 @@ static EventGroupHandle_t s_eg;
 #define BIT_CONN BIT0
 #define BIT_FAIL BIT1
 static int s_retries;
+// Disconnect-retry bound for the current attempt. Lowered (WIFI_FAST_CONNECT_RETRIES)
+// for the fast attempt so a stale AP hint fails fast; WIFI_CONNECT_RETRIES otherwise.
+static int s_max_retries = WIFI_CONNECT_RETRIES;
 static esp_netif_t *s_netif;
 static uint8_t s_last_disc_reason;   // last WIFI_EVENT_STA_DISCONNECTED reason
 // Reason latched at the moment wifi_start_sta() gives up. The classifier must
@@ -61,12 +64,57 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data) {
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_last_disc_reason = ((wifi_event_sta_disconnected_t *)data)->reason;
         if (!s_autoconnect) { /* not our attempt (e.g. portal scan teardown) */ }
-        else if (s_retries < WIFI_CONNECT_RETRIES) { s_retries++; esp_wifi_connect(); }
+        else if (s_retries < s_max_retries) { s_retries++; esp_wifi_connect(); }
         else xEventGroupSetBits(s_eg, BIT_FAIL);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_retries = 0;
         xEventGroupSetBits(s_eg, BIT_CONN);
     }
+}
+
+// One STA connect attempt. bssid != NULL targets that BSSID/channel directly
+// (fast path: esp_wifi skips the all-channel scan); NULL does a normal full-scan
+// connect. max_retries bounds the disconnect-retry loop (few for the fast attempt
+// so a stale hint fails quickly). Assumes the radio is inited + STA mode is set
+// and the driver is stopped. Returns ESP_OK on IP acquired, else ESP_FAIL.
+static esp_err_t attempt_connect(const char *ssid, const char *pass,
+                                 const uint8_t *bssid, uint8_t chan, int max_retries) {
+    wifi_config_t wc = {0};
+    strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
+    strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
+    // Refuse to join an unencrypted AP when a password is stored — without the
+    // threshold (default OPEN) a rogue open AP broadcasting our SSID would get
+    // the bearer token sent to it in cleartext.
+    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    if (bssid) {
+        memcpy(wc.sta.bssid, bssid, 6);
+        wc.sta.bssid_set = true;
+        wc.sta.channel   = chan;
+    }
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
+
+    xEventGroupClearBits(s_eg, BIT_CONN | BIT_FAIL);
+    s_retries = 0;
+    s_max_retries = max_retries;
+    s_autoconnect = true;   // STA_START -> connect, for this attempt only
+    ESP_ERROR_CHECK(esp_wifi_start());
+    // PicPak brownout guard: cap TX power before the radio transmits. esp_wifi_start
+    // resets it to the default, so (re)apply it on every attempt.
+    esp_wifi_set_max_tx_power(WIFI_TX_POWER_QDBM);
+
+    ESP_LOGI(TAG, "connecting to '%s'%s", ssid, bssid ? " (fast)" : "");
+    EventBits_t b = xEventGroupWaitBits(s_eg, BIT_CONN | BIT_FAIL, pdFALSE, pdFALSE,
+                                        pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
+    return (b & BIT_CONN) ? ESP_OK : ESP_FAIL;
+}
+
+// Cache the AP we just associated with (BSSID + primary channel) for next wake's
+// fast connect. No-op if the info is unavailable; the write itself is skipped
+// when unchanged (config_set_ap_hint), so this is cheap to call on every success.
+static void save_current_ap_hint(void) {
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        config_set_ap_hint(ap.bssid, ap.primary);
 }
 
 esp_err_t wifi_start_sta(void) {
@@ -91,26 +139,37 @@ esp_err_t wifi_start_sta(void) {
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_evt, NULL, NULL));
     ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_evt, NULL, NULL));
-
-    wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
-    // Refuse to join an unencrypted AP when a password is stored — without the
-    // threshold (default OPEN) a rogue open AP broadcasting our SSID would get
-    // the bearer token sent to it in cleartext.
-    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wc));
-    s_retries = 0;
-    s_autoconnect = true;   // STA_START -> connect, for this attempt only
-    ESP_ERROR_CHECK(esp_wifi_start());
-    // PicPak brownout guard: cap TX power before the radio transmits.
-    esp_wifi_set_max_tx_power(WIFI_TX_POWER_QDBM);
 
-    ESP_LOGI(TAG, "connecting to '%s'", ssid);
-    EventBits_t b = xEventGroupWaitBits(s_eg, BIT_CONN | BIT_FAIL, pdFALSE, pdFALSE,
-                                        pdMS_TO_TICKS(WIFI_CONNECT_TIMEOUT_MS));
-    if (b & BIT_CONN) { ESP_LOGI(TAG, "connected"); s_fail_reason = 0; return ESP_OK; }
+    // Fast path: reuse the last AP's BSSID + channel to skip the ~1-2 s scan. A
+    // stale hint (AP moved channel / router swapped) fails fast on WIFI_FAST_CONNECT_RETRIES,
+    // then we clear it and fall back to a full-scan connect — which re-caches the
+    // real AP, so the next wake is fast again (self-healing). Both transports
+    // benefit: this runs before the REST/MQTT split in main.c.
+    uint8_t bssid[6], chan;
+    if (config_get_ap_hint(bssid, &chan)) {
+        if (attempt_connect(ssid, pass, bssid, chan, WIFI_FAST_CONNECT_RETRIES) == ESP_OK) {
+            ESP_LOGI(TAG, "connected (fast)");
+            s_fail_reason = 0;
+            save_current_ap_hint();   // re-cache (no-op write if unchanged)
+            return ESP_OK;
+        }
+        ESP_LOGW(TAG, "fast connect failed; clearing hint + full scan");
+        config_clear_ap_hint();
+        // Disarm auto-connect before tearing down: esp_wifi_stop() fires a
+        // disconnect event, and if the fast attempt failed by timeout (retries
+        // not yet exhausted) the handler would otherwise fire esp_wifi_connect()
+        // mid-teardown. attempt_connect() re-arms it for the full attempt.
+        s_autoconnect = false;
+        esp_wifi_stop();   // tear down before the fallback attempt
+    }
+
+    if (attempt_connect(ssid, pass, NULL, 0, WIFI_CONNECT_RETRIES) == ESP_OK) {
+        ESP_LOGI(TAG, "connected");
+        s_fail_reason = 0;
+        save_current_ap_hint();
+        return ESP_OK;
+    }
     s_fail_reason = s_last_disc_reason;   // latch before wifi_stop() can clobber it
     ESP_LOGW(TAG, "connect failed/timeout (last disconnect reason=%d)", s_fail_reason);
     return ESP_FAIL;

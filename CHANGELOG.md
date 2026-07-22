@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+- **WiFi fast-connect (both transports).** After the first association the AP's
+  BSSID + primary channel are cached in NVS (`config_{get,set,clear}_ap_hint`,
+  `wifi` namespace) and targeted directly on the next wake, so the radio skips
+  the ~1–2 s all-channel scan — less radio-on time per wake (battery, and a
+  smaller brownout-sag window). It runs before the REST/MQTT split, so both
+  transports benefit. A stale hint (AP moved channel / router swapped) fails
+  fast on one retry (`WIFI_FAST_CONNECT_RETRIES`), clears the hint, and falls
+  back to a normal full-scan connect that re-caches the real AP — one slower
+  wake, then fast again (self-healing, hardware-verified across a channel
+  change). DHCP unchanged. Ported from `tesserae-device-firmware-1.5.1`.
+- **Physical-button refresh (REST).** A **~3 s front-button hold** — classified
+  on release, so the existing gestures are untouched (quick tap → wake + check,
+  3–20 s → refresh, ≥20 s → provisioning portal) — sends
+  `GET /frame?button=refresh&button_event_id=<n>` and drops `If-None-Match`, so
+  the server re-renders the current frame (fresh data — e.g. a live clock/weather)
+  and the panel repaints. An RTC-retained monotonic event id dedups one physical
+  press across the `/frame` request and a `/status` fallback field. MQTT logs and
+  ignores the gesture (the server dispatches button actions only on its REST
+  endpoints). Note: the server re-renders only for a **rotation-bound** device — a
+  directly-pushed page has no rotation step to refresh and the press no-ops.
+
+### Changed
+- **`sleep_until` reported in `/status`.** The heartbeat now carries the absolute
+  epoch the device intends to wake next (`now + interval`, guarded by a sane-clock
+  check), matching the reference payload shape. Redundant in effect — the server
+  prefers `next_sleep_s`, which we already send, and drops `sleep_until` on
+  disagreement — but kept for parity.
+- **REST control-response buffers `2 KB → 4 KB`** (`REST_RESP_MAX`), matching the
+  reference's headroom against a growing server `config` object (static `.bss`
+  only, ~+6 KB RAM; overflow is still logged as a tripwire).
+- `FW_VERSION` bumped `0.6.0` → `0.7.0`.
+
 ## 0.6.0
 
 ### Fixed

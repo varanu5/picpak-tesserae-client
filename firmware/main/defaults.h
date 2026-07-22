@@ -29,7 +29,7 @@
 #endif
 
 #ifndef FW_VERSION
-#define FW_VERSION          "0.6.0"
+#define FW_VERSION          "0.7.0"
 #endif
 #define DEVICE_KIND         "picpak_client"
 
@@ -59,6 +59,14 @@
 // WiFi connect tuning.
 #define WIFI_CONNECT_RETRIES       5
 #define WIFI_CONNECT_TIMEOUT_MS    15000
+// Fast-connect: reuse the last AP's BSSID + channel to skip the ~1-2 s all-channel
+// scan on a wake (saves radio-on time -> battery + a shorter brownout-sag window;
+// applies to both REST and MQTT since it runs before transport dispatch). Try it
+// with few retries so a stale hint (AP moved channel / router swapped) fails fast
+// and falls back to a full-scan connect, which then re-caches the real AP. Plain
+// port from tesserae-device-firmware-1.5.1; no short-fast-timeout mitigation
+// (network changes ~never here, so the stale-hint path is effectively never hit).
+#define WIFI_FAST_CONNECT_RETRIES  1
 // PicPak's power delivery is marginal: at default max TX power (~20 dBm) the
 // radio's current spike browns the board out the instant it transmits, so cap
 // it. Units = 0.25 dBm; 52 = 13 dBm.
@@ -68,6 +76,13 @@
 // (USB enumerated) before the normal sleep cycle, so a sleeping build is always
 // re-flashable.
 #define BOOT_HOLD_WINDOW_MS        15000
+// Button hold thresholds (classified on RELEASE, see power_boot_gesture):
+//   tap (< this)            -> normal wake + check (today's behaviour)
+//   >= this, < PROVISION    -> refresh (REST: /frame?button=refresh, server re-renders)
+//   >= PROVISION_HOLD_MS    -> captive portal (unchanged)
+// A continuous hold to 20 s reaches provisioning and never fires a refresh on the
+// way, so the existing provisioning gesture is untouched.
+#define BTN_REFRESH_HOLD_MS        3000
 
 // --- Captive-portal provisioning ---
 #define PROVISION_AP_SSID          "Tesserae-Setup"

@@ -8,6 +8,7 @@
 #include "wifi_manager.h"
 
 #include <stdio.h>
+#include <time.h>
 
 static const char *wake_reason_str(esp_reset_reason_t r) {
     switch (r) {
@@ -25,7 +26,8 @@ static const char *wake_reason_str(esp_reset_reason_t r) {
 }
 
 void heartbeat_json(char *dst, size_t dst_sz, int sleep_interval_s,
-                    esp_reset_reason_t reset_reason) {
+                    esp_reset_reason_t reset_reason,
+                    const char *button, uint32_t button_event_id) {
     if (!dst || dst_sz == 0) return;
     int mv = power_battery_mv();
     int pct = power_battery_pct(mv);   // reuse the one reading (single ADC read + log)
@@ -33,10 +35,27 @@ void heartbeat_json(char *dst, size_t dst_sz, int sleep_interval_s,
     char ip[16] = {0};
     wifi_get_sta_ip(ip, sizeof(ip));
 
-    snprintf(dst, dst_sz,
+    // Object left open (no closing brace) so the optional button report can be
+    // appended before it is closed below.
+    int n = snprintf(dst, dst_sz,
         "{\"battery_mv\":%d,\"battery_pct\":%d,\"rssi\":%d,\"ip\":\"%s\","
         "\"fw_version\":\"%s\",\"kind\":\"%s\",\"panel_w\":%d,\"panel_h\":%d,"
-        "\"sleep_interval_s\":%d,\"next_sleep_s\":%d,\"wake_reason\":\"%s\"}",
+        "\"sleep_interval_s\":%d,\"next_sleep_s\":%d,\"wake_reason\":\"%s\"",
         mv, pct, rssi, ip, FW_VERSION, DEVICE_KIND, EPD_W, EPD_H,
         sleep_interval_s, sleep_interval_s, wake_reason_str(reset_reason));
+    if (n < 0 || (size_t)n >= dst_sz) return;   // truncated; leave what we have
+    // Absolute epoch the device intends to wake next (reference parity). The
+    // server cross-checks it against next_sleep_s and prefers next_sleep_s on
+    // disagreement, so only send it with a real clock — the REST Date header
+    // sets the RTC each wake, so this normally holds after the first response.
+    time_t now = time(NULL);
+    if (now > CLOCK_SANE_EPOCH && sleep_interval_s > 0)
+        n += snprintf(dst + n, dst_sz - n, ",\"sleep_until\":%lld",
+                      (long long)(now + sleep_interval_s));
+    if (n < 0 || (size_t)n >= dst_sz) return;
+    if (button && button[0])
+        n += snprintf(dst + n, dst_sz - n, ",\"button\":\"%s\",\"button_event_id\":%u",
+                      button, (unsigned)button_event_id);
+    if (n < 0 || (size_t)n >= dst_sz) return;
+    snprintf(dst + n, dst_sz - n, "}");
 }

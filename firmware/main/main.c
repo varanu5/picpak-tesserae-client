@@ -19,10 +19,17 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_sleep.h"
+#include "esp_attr.h"   // RTC_NOINIT_ATTR
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 static const char *TAG = "picpak";
+
+// Monotonic id bumped per button-refresh request, retained across deep sleep so
+// the server can dedup one physical press delivered on both /frame and /status.
+// RTC_NOINIT survives deep sleep but is garbage on a true cold boot -> zeroed on
+// ESP_RST_POWERON in app_main.
+RTC_NOINIT_ATTR static uint32_t s_button_event_seq;
 
 // Authorship, baked into the binary's .rodata (find it with
 // `strings picpak-tesserae-client.bin | grep varanu5`) and printed once per
@@ -46,9 +53,15 @@ void app_main(void) {
 
     ESP_ERROR_CHECK(config_init());
 
+    // Cold boot: RTC-retained button counter holds garbage from power-up.
+    if (reason == ESP_RST_POWERON) s_button_event_seq = 0;
+
     // Provisioning: a 20s button-hold at wake, or no usable WiFi SSID, enters the
-    // captive portal. (power_boot_gesture also runs the shorter flash-hold window.)
-    bool want_provision = power_boot_gesture();
+    // captive portal. A shorter 3-20s hold is a refresh gesture (classified on
+    // release; see power_boot_gesture). (Also runs the flash-hold window.)
+    btn_gesture_t gesture = power_boot_gesture();
+    bool want_provision = (gesture == BTN_GESTURE_PROVISION);
+    bool want_refresh   = (gesture == BTN_GESTURE_REFRESH);
     if (!want_provision) {
         char ssid[33], pass[65];
         want_provision = !config_get_wifi(ssid, sizeof ssid, pass, sizeof pass);
@@ -120,6 +133,10 @@ void app_main(void) {
             // is implausible — the C3 RTC persists across deep sleep, so this
             // normally fires once per power-on. REST stays NTP-free (0.3.0).
             if (time(NULL) < CLOCK_SANE_EPOCH) wifi_sync_ntp();
+            // Button refresh is REST-only: the server dispatches button actions
+            // on its HTTP endpoints, not over MQTT's push-only frame topic.
+            if (want_refresh)
+                ESP_LOGW(TAG, "refresh gesture ignored: not supported on MQTT transport");
             next = mqtt_run_loop(reason);
         } else {
             // https cert validation needs a plausible wall clock too (validity
@@ -128,7 +145,9 @@ void app_main(void) {
             config_get_server_url(srv, sizeof srv);
             if (strncmp(srv, "https://", 8) == 0 && time(NULL) < CLOCK_SANE_EPOCH)
                 wifi_sync_ntp();
-            next = rest_run_loop(reason);
+            // A refresh gesture this wake gets a fresh, RTC-retained event id.
+            uint32_t refresh_ev = want_refresh ? ++s_button_event_seq : 0;
+            next = rest_run_loop(reason, want_refresh, refresh_ev);
         }
     } else {
         ESP_LOGW(TAG, "WiFi failed; keeping last image, retry next wake");

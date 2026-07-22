@@ -208,7 +208,7 @@ int mqtt_run_loop(esp_reset_reason_t reset_reason) {
     // what keeps telemetry flowing while a problem is being debugged.
     uint32_t sleep_s = config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
     char hb[512];
-    heartbeat_json(hb, sizeof hb, (int)sleep_s, reset_reason);
+    heartbeat_json(hb, sizeof hb, (int)sleep_s, reset_reason, NULL, 0);  // no button report on MQTT
     xEventGroupClearBits(s_events, BIT_FAILED);   // stale fetch-phase errors don't fail the publish wait
     s_pub_msg_id = esp_mqtt_client_publish(cli, s_topic_status, hb, 0, /*qos*/ 1, /*retain*/ 1);
     if (s_pub_msg_id >= 0) {
