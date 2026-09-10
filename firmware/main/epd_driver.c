@@ -5,7 +5,6 @@
 #include "epd_init_seq.h"
 #include "epd_lut_5s.h"
 #include "epd_lut_10s.h"
-#include "epd_tempcomp.h"
 #include "config_store.h"
 #include "defaults.h"
 #include "board.h"
@@ -14,52 +13,9 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
-#include <limits.h>
 
 static const char *TAG = "epd";
 
-// --- Temperature compensation (EXPERIMENTAL, branch feat/epd-tempcomp) --------
-// Nudges the panel PWR (0x01) drive voltage by a small signed step derived from
-// the C3 on-die temperature. See epd_tempcomp.h. Safe by design: only the 5s/10s
-// vendor-LUT path, only a source-drive byte (never flags/gate), clamped to ±6,
-// and a no-op at the reference temperature.
-#ifndef EPD_TEMPCOMP
-#define EPD_TEMPCOMP         1   // master on/off for the temp->PWR nudge
-#endif
-#ifndef EPD_TEMPCOMP_REF_C
-#define EPD_TEMPCOMP_REF_C   30  // reference die temp (deg C); corr==0 here. Set to the
-                                 // observed room-temp die reading (~30C, incl. self-heat)
-                                 // so normal indoor use sits at the baseline look.
-#endif
-#ifndef EPD_TEMPCOMP_CLAMP
-#define EPD_TEMPCOMP_CLAMP   6   // max |correction| in LSB
-#endif
-#ifndef EPD_TEMPCOMP_TARGET_IDX
-#define EPD_TEMPCOMP_TARGET_IDX 2 // pwr[] byte to nudge: 2=VDH 3=VDL 4=VDHR (never 0=flags/1=gate)
-#endif
-#ifndef EPD_TEMPCOMP_FORCE
-#define EPD_TEMPCOMP_FORCE   0   // bench override: if nonzero, use this corr regardless of temp
-#endif
-
-#if EPD_TEMPCOMP
-#include "driver/temperature_sensor.h"
-// Read the ESP32-C3 on-die temperature sensor once. Returns whole deg C, or
-// INT_MIN on failure (caller then applies no correction).
-static int epd_read_die_temp_c(void) {
-    temperature_sensor_handle_t h = NULL;
-    temperature_sensor_config_t cfg = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
-    if (temperature_sensor_install(&cfg, &h) != ESP_OK) return INT_MIN;
-    int out = INT_MIN;
-    if (temperature_sensor_enable(h) == ESP_OK) {
-        float t = 0;
-        if (temperature_sensor_get_celsius(h, &t) == ESP_OK)
-            out = (int)(t >= 0 ? t + 0.5f : t - 0.5f);
-        temperature_sensor_disable(h);
-    }
-    temperature_sensor_uninstall(h);
-    return out;
-}
-#endif
 static spi_device_handle_t s_spi;
 static bool s_spi_ready = false;   // SPI bus set up once per boot; epd_init re-callable
 
@@ -113,29 +69,8 @@ static void epd_init_vendor_lut(const uint8_t *L) {
     epd_send(0x00, (const uint8_t[]){0x07, 0xA9}, 2);            // PSR (0x80=ext LUT)
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    uint8_t pwr[6] = { 0x07, TR[0], TR[1], TR[3], TR[2], TR[4] };
-    // pwr[]: 0=flags 1=VGH/VGL 2=VDH 3=VDL 4=VDHR 5=+ . Temperature nudge (if
-    // enabled) adjusts one source-drive byte; no-op at the reference temp.
-#if EPD_TEMPCOMP
-    {
-        int die  = epd_read_die_temp_c();
-        int corr = (EPD_TEMPCOMP_FORCE != 0) ? EPD_TEMPCOMP_FORCE
-                 : (die == INT_MIN)           ? 0
-                 : epd_tempcomp_corr(die, EPD_TEMPCOMP_REF_C, EPD_TEMPCOMP_CLAMP);
-        int idx = EPD_TEMPCOMP_TARGET_IDX;
-        int nv  = (int)pwr[idx] + corr;
-        if (nv < 0) nv = 0; else if (nv > 255) nv = 255;
-        uint8_t old = pwr[idx];
-        pwr[idx] = (uint8_t)nv;
-        if (die == INT_MIN)
-            ESP_LOGW(TAG, "tempcomp: die temp read FAILED; no correction applied");
-        ESP_LOGI(TAG, "tempcomp: die=%dC ref=%d clamp=%d force=%d delta=%d corr=%d | "
-                      "PWR[%d] %02X->%02X | full=%02X %02X %02X %02X %02X %02X",
-                 die, EPD_TEMPCOMP_REF_C, EPD_TEMPCOMP_CLAMP, EPD_TEMPCOMP_FORCE,
-                 (die == INT_MIN ? 0 : die - EPD_TEMPCOMP_REF_C), corr, idx, old, pwr[idx],
-                 pwr[0], pwr[1], pwr[2], pwr[3], pwr[4], pwr[5]);
-    }
-#endif
+    const uint8_t pwr[6] = { 0x07, TR[0], TR[1], TR[3], TR[2], TR[4] };
+    // pwr[]: 0=flags 1=VGH/VGL 2=VDH 3=VDL 4=VDHR 5=+ (from the LUT trailer).
     epd_send(0x01, pwr, 6);                                       // PWR (trailer)
     const uint8_t v82 = (uint8_t)(TR[5] - 0x80);
     epd_send(0x82, &v82, 1);                                      // vendor
@@ -165,8 +100,8 @@ static void epd_init_vendor_lut(const uint8_t *L) {
 // Panel built-in "native MTP" waveform — the safe, slow default. Iterate by
 // size (0xFF is a valid command byte here, not a sentinel).
 static void epd_init_native(void) {
-    const uint8_t *seq = EPD_INIT_SPECIFIC;      // shipping panels report EPD ID 06 04
-    size_t n = sizeof(EPD_INIT_SPECIFIC);
+    const uint8_t *seq = EPD_INIT_NATIVE;        // full factory init — all panels
+    size_t n = sizeof(EPD_INIT_NATIVE);
     for (size_t i = 0; i < n; ) {
         uint8_t cmd = seq[i++];
         uint8_t len = seq[i++];
@@ -174,7 +109,7 @@ static void epd_init_native(void) {
         epd_data(&seq[i], len);
         i += len;
     }
-    ESP_LOGI(TAG, "init done (native MTP)");
+    ESP_LOGI(TAG, "init done (native full init)");
 }
 
 esp_err_t epd_init(void) {

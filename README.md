@@ -15,7 +15,7 @@ Modelled on Tesserae's battery-native reference client
 but retargeted to the PicPak's hardware: a smaller 4-colour panel, an ESP32-C3 (RISC-V) instead of an
 S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame format.
 
-> **Status:** working end-to-end over REST, MQTT, and cloud relay on real hardware. `FW_VERSION 0.9.5`.
+> **Status:** working end-to-end over REST, MQTT, and cloud relay on real hardware. `FW_VERSION 0.9.6`.
 > See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 > Tested on PicPak **hardware revision v0.0.1**, migrating from **official firmware v1.1.11**
 > to this firmware and back (stock restore verified).
@@ -417,7 +417,7 @@ precedes the paint by its 13 to 22 s duration):
   "battery_pct": 96,
   "rssi": -63,
   "ip": "10.0.20.40",
-  "fw_version": "0.9.5",
+  "fw_version": "0.9.6",
   "kind": "picpak_client",
   "panel_w": 400,
   "panel_h": 300,

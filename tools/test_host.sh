@@ -6,7 +6,7 @@ trap 'rm -rf "$BUILD"' EXIT HUP INT TERM
 IDF="${IDF_PATH:-$HOME/.platformio/packages/framework-espidf}"
 MBEDTLS="$IDF/components/mbedtls/mbedtls"
 
-for name in battpct epd_tempcomp lowbatt manual_mode rest_button maintenance_button; do
+for name in battpct lowbatt manual_mode rest_button maintenance_button; do
     cc -std=c11 -Wall -Wextra -Werror -Ifirmware/main \
         "firmware/test/test_$name.c" -lm -o "$BUILD/$name"
     "$BUILD/$name"

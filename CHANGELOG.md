@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.6
+
+### Fixed
+- Native refresh now applies the panel's full initialization sequence, improving
+  colour accuracy on some panels.
+
+### Changed
+- Fast refresh (5s / 10s) now uses the panel's drive values directly.
+
 ## 0.9.5
 
 ### Added
