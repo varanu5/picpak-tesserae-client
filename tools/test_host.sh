@@ -6,6 +6,16 @@ trap 'rm -rf "$BUILD"' EXIT HUP INT TERM
 IDF="${IDF_PATH:-$HOME/.platformio/packages/framework-espidf}"
 MBEDTLS="$IDF/components/mbedtls/mbedtls"
 
+# Copy only display sources and public configuration headers; do not load local secrets.
+mkdir "$BUILD/epd-src"
+cp firmware/main/epd_driver.c firmware/main/epd_driver.h firmware/main/epd_init_seq.h \
+    firmware/main/epd_lut_5s.h firmware/main/epd_lut_10s.h firmware/main/board.h \
+    firmware/main/config_store.h firmware/main/defaults.h firmware/main/button_gesture.h \
+    "$BUILD/epd-src/"
+cc -std=c11 -Wall -Wextra -Werror -Ifirmware/test/epd_stubs -I"$BUILD/epd-src" \
+    firmware/test/test_epd_driver.c "$BUILD/epd-src/epd_driver.c" -o "$BUILD/epd"
+"$BUILD/epd" firmware/test/fixtures
+
 for name in battpct lowbatt manual_mode rest_button maintenance_button; do
     cc -std=c11 -Wall -Wextra -Werror -Ifirmware/main \
         "firmware/test/test_$name.c" -lm -o "$BUILD/$name"

@@ -16,5 +16,10 @@ typedef enum {
 } epd_waveform_t;
 
 esp_err_t epd_init(void);                 // SPI + GPIO, reset, run init sequence
-void      epd_display(const uint8_t *fb); // load 30,000 bytes + refresh, wait BUSY
-void      epd_sleep(void);                // panel deep sleep
+esp_err_t epd_display(const uint8_t *fb); // load 30,000 bytes + refresh, wait BUSY
+esp_err_t epd_sleep(void);                // panel deep sleep
+
+// Complete one display cycle. Returns ESP_OK only after refresh and panel sleep
+// succeed. On failure, attempts bounded shutdown and preserves the original error.
+// Serialize calls; the driver owns one shared panel and SPI device.
+esp_err_t epd_present(const uint8_t *fb);

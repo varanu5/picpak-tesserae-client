@@ -1067,14 +1067,15 @@ static ble_setup_result_t run_session(uint32_t timeout_s, bool photo)
     // Finish the panel refresh before advertising: the QR must match this session,
     // and display/radio peaks should not overlap on PicPak's marginal supply.
     if (!photo) {
-        if (!maintenance_screen_render(framebuf(), s_qr_payload, s_passkey) ||
-            epd_init() != ESP_OK) {
+        if (!maintenance_screen_render(framebuf(), s_qr_payload, s_passkey)) {
             scrub_session();
             return BLE_SETUP_RESULT_ERROR;
         }
         config_clear_frame_ref();
-        epd_display(framebuf());
-        epd_sleep();
+        if (epd_present(framebuf()) != ESP_OK) {
+            scrub_session();
+            return BLE_SETUP_RESULT_ERROR;
+        }
     }
 
     if (xTaskCreate(worker_task, "ble_setup_work", 7168, NULL, 5, &s_worker) != pdPASS ||
@@ -1118,14 +1119,13 @@ cleanup:
         // explain how to wake photo reception instead of implying it was disabled.
         if (config_screen_is_bluetooth()) maintenance_screen_photo_ready(framebuf());
         else maintenance_screen_closed(framebuf());
-        if (epd_init() == ESP_OK) { epd_display(framebuf()); epd_sleep(); }
+        if (epd_present(framebuf()) != ESP_OK) s_result = BLE_SETUP_RESULT_ERROR;
     }
     if (photo && s_result == BLE_SETUP_RESULT_PHOTO_RECEIVED) {
         // Radio off before the high-current refresh. The receipt explicitly
         // confirms verified reception, not successful physical refresh.
         config_clear_frame_ref();
-        if (epd_init() == ESP_OK) { epd_display(framebuf()); epd_sleep(); }
-        else s_result = BLE_SETUP_RESULT_ERROR;
+        if (epd_present(framebuf()) != ESP_OK) s_result = BLE_SETUP_RESULT_ERROR;
     }
     if (photo) memset(framebuf(), 0, BLE_PHOTO_BYTES);
     memset(&s_photo, 0, sizeof s_photo);

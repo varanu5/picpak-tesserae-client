@@ -126,7 +126,8 @@ void app_main(void) {
         } else if (act.paint == MANUAL_PAINT_READY) {
             ESP_LOGI(TAG, "manual mode: battery recovered -> ready screen");
             maintenance_screen_photo_ready(framebuf());
-            if (epd_init() == ESP_OK) { epd_display(framebuf()); epd_sleep(); }
+            if (epd_present(framebuf()) != ESP_OK)
+                ESP_LOGW(TAG, "ready screen failed");
         }
         if (act.run_photo) ble_photo_run(90);
         // Diagnostic summary, printed after the session so it survives the USB-Serial-JTAG
@@ -362,16 +363,16 @@ void app_main(void) {
                       : (transport == 0) ? mqtt_pending_frame()
                                          : rest_pending_frame();
     if (fb) {
-        if (epd_init() == ESP_OK) {
-            ESP_LOGI(TAG, "painting new frame (radio off)");
-            epd_display(fb);
-            // Persist the frame ref (ETag / URL) only after a successful paint.
+        ESP_LOGI(TAG, "painting new frame (radio off)");
+        esp_err_t err = epd_present(fb);
+        if (err == ESP_OK) {
+            // Commit only after refresh and panel shutdown have both succeeded.
             if (use_relay)           relay_frame_painted();
             else if (transport == 0) mqtt_frame_painted();
             else                     rest_frame_painted();
-            epd_sleep();
         } else {
-            ESP_LOGW(TAG, "epd_init failed; keeping last image, retry next wake");
+            ESP_LOGW(TAG, "display failed (%s); frame reference unchanged, retry next wake",
+                     esp_err_to_name(err));
         }
     }
     power_deep_sleep((uint32_t)next);   // no return

@@ -27,15 +27,11 @@ static esp_err_t paint(const uint8_t *start, const uint8_t *end, const char *lab
                  label, (unsigned)len, (unsigned)EPD_FB_BYTES);
         return ESP_ERR_INVALID_SIZE;
     }
-    esp_err_t err = epd_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "epd_init failed (%d); skipping %s splash", err, label);
-        return err;
-    }
     ESP_LOGI(TAG, "painting %s splash (~13-22 s)...", label);
-    epd_display(start);
-    epd_sleep();
-    return ESP_OK;
+    esp_err_t err = epd_present(start);
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "%s splash failed: %s", label, esp_err_to_name(err));
+    return err;
 }
 
 esp_err_t splash_show_setup(void) {

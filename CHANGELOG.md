@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.7
+
+### Fixed
+
+- Completed the display refresh command and corrected readiness waits and timeouts
+  for native, 5s and 10s modes.
+- Failed display updates no longer save the new frame reference as successfully displayed.
+- Added one bounded shutdown recovery attempt after display failures.
+
 ## 0.9.6
 
 ### Fixed
