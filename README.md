@@ -254,10 +254,11 @@ vendor's update/OTA tools stop recognizing the device until you restore stock, w
 WiFi + server come from an on-device **SoftAP captive portal** (`firmware/main/provisioning.c`), with no
 recompiling. It opens automatically when there are no usable creds at boot (empty NVS + empty
 `secrets.h`), or on demand via the ~20 s button hold below. The portal also lets you pick a
-**refresh speed** (5 s (default), 10 s, or the panel's native waveform), a trade-off between how
-fast the screen redraws and colour fidelity; the choice is saved and can be changed any time. The
-fast waveforms also get a small automatic temperature compensation (from the on-chip sensor); it
-needs no setup.
+**refresh speed**: **Native (default, recommended)**, 5 s, or 10 s. A fresh installation with
+no saved refresh setting uses Native for the first setup screen and preselects Native in the
+portal. You can choose 5 s or 10 s for faster updates; colour and refresh compatibility vary by
+panel. The choice is saved and can be changed any time. Firmware updates that preserve settings
+keep the previously selected refresh speed.
 
 The frame's **single button** is classified by how long you hold it at wake (deck-next and refresh
 are **REST transport only**):
