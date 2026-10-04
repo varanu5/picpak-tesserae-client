@@ -77,12 +77,19 @@ bool mqtt_extract_int(const char *data, size_t len, const char *key, int32_t *ou
     if (*p == '-') { sign = -1; p++; }
     if (p >= data + len || !isdigit((unsigned char)*p)) return false;
 
-    int32_t v = 0;
+    uint32_t limit = sign < 0 ? (uint32_t)INT32_MAX + 1u : (uint32_t)INT32_MAX;
+    uint32_t v = 0;
+    if (*p == '0' && p + 1 < data + len && isdigit((unsigned char)p[1])) return false;
     while (p < data + len && isdigit((unsigned char)*p)) {
-        v = v * 10 + (*p - '0');
+        uint32_t digit = (uint32_t)(*p - '0');
+        if (v > (limit - digit) / 10u) return false;
+        v = v * 10u + digit;
         p++;
     }
-    *out = v * sign;
+    while (p < data + len && isspace((unsigned char)*p)) p++;
+    if (p < data + len && *p != ',' && *p != '}') return false;
+    *out = sign < 0 ? (v == (uint32_t)INT32_MAX + 1u ? INT32_MIN : -(int32_t)v)
+                    : (int32_t)v;
     return true;
 }
 

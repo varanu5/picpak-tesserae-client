@@ -4,7 +4,7 @@
 #pragma once
 #include "esp_err.h"
 
-// Brings up SoftAP "Tesserae-Setup" + DNS hijack + HTTP form; blocks until the
+// Brings up the device setup network with DNS and an HTTP form. Blocks until the
 // user submits (persisted via config_store) or the idle timeout fires (only
 // counted while no client is connected). `note` (may be NULL) is a constant
 // error string shown as a banner on the form — used when re-entering the

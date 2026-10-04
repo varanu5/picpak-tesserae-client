@@ -18,17 +18,17 @@ int image_fetch(const char *url, uint8_t *buf, size_t buf_sz) {
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     if (esp_http_client_open(c, 0) != ESP_OK) { esp_http_client_cleanup(c); return -1; }
-    esp_http_client_fetch_headers(c);
+    int64_t declared = esp_http_client_fetch_headers(c);
 
     int status = esp_http_client_get_status_code(c);
-    if (status < 200 || status > 299) {
+    if (status != 200 || declared < 0 || (declared > 0 && declared != (int64_t)buf_sz)) {
         ESP_LOGE(TAG, "HTTP %d; not reading body", status);
         esp_http_client_close(c);
         esp_http_client_cleanup(c);
         return -1;
     }
 
-    int total = 0, r;
+    int total = 0, r = 0;
     while (total < (int)buf_sz &&
            (r = esp_http_client_read(c, (char *)buf + total, buf_sz - total)) > 0) {
         total += r;
@@ -39,15 +39,18 @@ int image_fetch(const char *url, uint8_t *buf, size_t buf_sz) {
     // where the Content-Length header is absent.
     if (total == (int)buf_sz) {
         char extra;
-        if (esp_http_client_read(c, &extra, 1) > 0) {
+        r = esp_http_client_read(c, &extra, 1);
+        if (r > 0) {
             ESP_LOGE(TAG, "body exceeds %d bytes; rejecting", (int)buf_sz);
             esp_http_client_close(c);
             esp_http_client_cleanup(c);
             return -1;
         }
     }
+    bool complete = r >= 0 && esp_http_client_is_complete_data_received(c);
     esp_http_client_close(c);
     esp_http_client_cleanup(c);
+    if (!complete || total != (int)buf_sz) return -1;
 
     ESP_LOGI(TAG, "fetched %d bytes (HTTP %d)", total, status);
     return total;

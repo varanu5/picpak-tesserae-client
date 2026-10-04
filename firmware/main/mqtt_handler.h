@@ -16,6 +16,9 @@
 // from NVS (the retained config topic may have updated it this session).
 int mqtt_run_loop(esp_reset_reason_t reset_reason);
 
+// The broker accepted a connection during this cycle.
+bool mqtt_connection_ok(void);
+
 // After mqtt_run_loop: the validated new frame to paint this wake, or NULL
 // (unchanged/no-message/error). Paint it with the radio already off, then call
 // mqtt_frame_painted() to persist its URL — only after a successful paint, so

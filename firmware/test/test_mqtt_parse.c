@@ -54,6 +54,18 @@ int main(void) {
     const char *notnum = "{\"sleep_interval_s\": \"soon\"}";
     assert(!mqtt_extract_int(notnum, strlen(notnum), "sleep_interval_s", &v));
 
+    const char *bad_numbers[]={"4294968196", "2147483648", "-2147483649", "999999999999999999999",
+        "12.5", "12x", "1e3", "01", "+1", "-"};
+    for (size_t i=0; i<sizeof bad_numbers/sizeof bad_numbers[0]; i++) {
+        char payload[100]; snprintf(payload, sizeof payload, "{\"x\":%s}", bad_numbers[i]);
+        v=123;
+        assert(!mqtt_extract_int(payload, strlen(payload), "x", &v) && v==123);
+    }
+    const char *minimum="{\"x\":-2147483648}";
+    const char *maximum="{\"x\":2147483647}";
+    assert(mqtt_extract_int(minimum, strlen(minimum), "x", &v) && v==INT32_MIN);
+    assert(mqtt_extract_int(maximum, strlen(maximum), "x", &v) && v==INT32_MAX);
+
     // --- mqtt_normalize_uri ---
     char uri[160];
     strcpy(uri, "192.168.1.50:1883");

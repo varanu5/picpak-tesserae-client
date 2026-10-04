@@ -9,7 +9,8 @@ colours, then packs 2bpp MSB-first with the SAME vertical flip as
 server-plugin/renderers/esp32_bwry_bin/renderer.py (the panel scans
 bottom-to-top). Outputs exactly 30000 bytes each.
 
-Text is baked from the SoftAP constants below — keep them in sync with
+The base network label is replaced with the device SSID at runtime.
+Other text is baked from the SoftAP constants below — keep them in sync with
 PROVISION_AP_SSID / PROVISION_AP_PASS in firmware/main/defaults.h and re-run
 this script if they change:
     python3 tools/gen_splash.py
@@ -107,16 +108,19 @@ def colour_page(panel_color):
 
 
 def make_setup():
-    img, d = colour_page(PALETTE[YELLOW])
-    wifi_icon(d, 64, 150, PALETTE[BLACK])
+    img = Image.new("RGB", (PANEL_W, PANEL_H), PALETTE[WHITE])
+    d = ImageDraw.Draw(img)
+    d.text((152, 22), "Tesserae", fill=PALETTE[BLACK], font=load_font(20))
+    wifi_icon(d, 76, 150, PALETTE[BLACK])
     d.text((152, 58), "Wi-Fi Setup", fill=PALETTE[BLACK], font=load_font(30))
     f_lbl, f_val = load_font(15), load_font(23)
     d.text((152, 116), "NETWORK", fill=PALETTE[RED], font=f_lbl)
     d.text((152, 136), AP_SSID, fill=PALETTE[BLACK], font=f_val)
     d.text((152, 176), "PASSWORD", fill=PALETTE[RED], font=f_lbl)
     d.text((152, 196), AP_PASS, fill=PALETTE[BLACK], font=f_val)
-    d.text((152, 244), "Join this Wi-Fi, then open", fill=PALETTE[BLACK], font=load_font(16))
-    d.text((152, 264), "http://192.168.4.1", fill=PALETTE[BLACK], font=load_font(16))
+    d.text((152, 232), "Scan QR or join this Wi-Fi.", fill=PALETTE[BLACK], font=load_font(16))
+    d.text((152, 252), "If setup doesn’t open, visit", fill=PALETTE[BLACK], font=load_font(16))
+    d.text((152, 272), "http://192.168.4.1", fill=PALETTE[BLACK], font=load_font(16))
     return img
 
 

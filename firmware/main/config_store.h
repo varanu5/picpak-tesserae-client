@@ -46,7 +46,7 @@ bool config_get_photo_key(uint8_t key[32]);
 esp_err_t config_save_screen_mode(bool bluetooth, const uint8_t key[32]);
 
 // --- portal write path ---
-void config_set_wifi(const char *ssid, const char *pass);   // blank/NULL pass keeps existing
+void config_set_wifi(const char *ssid, const char *pass);   // blank pass keeps the password only for the same SSID
 void config_set_server_url(const char *url);
 void config_set_transport(uint8_t mode);                    // 0=MQTT, 1=REST
 uint8_t config_get_transport(uint8_t fallback);
@@ -71,7 +71,7 @@ void config_set_relay_url(const char *url);
 void config_get_relay_code(char *out, size_t out_sz);
 void config_set_relay_code(const char *code);
 bool config_get_relay_priv(uint8_t priv[32]);      // false if absent
-void config_set_relay_priv(const uint8_t priv[32]);
+esp_err_t config_set_relay_priv(const uint8_t priv[32]);
 void config_set_relay_paired(const char *install, const char *device,
                              const char *token, const uint8_t key[32]);
 void config_get_relay_install(char *out, size_t out_sz);
@@ -87,7 +87,7 @@ void config_clear_relay(void);        // erase all relay state
 // url — used on a confirmed revoke so re-pairing pre-fills the URL. After this,
 // config_relay_ready()/configured() are false until a fresh code re-pairs.
 void config_forget_relay_pairing(void);
-void config_set_mqtt(const char *uri, const char *user, const char *pass);  // blank/NULL pass keeps existing
+void config_set_mqtt(const char *uri, const char *user, const char *pass);  // blank pass keeps the password only for the same SSID
 // MQTT broker config (NVS -> secrets -> ""). All outputs always NUL-terminated.
 void config_get_mqtt(char *uri, size_t uri_sz, char *user, size_t user_sz,
                      char *pass, size_t pass_sz);
@@ -102,3 +102,7 @@ void config_set_frame_url(const char *url);
 void config_clear_frame_ref(void);
 void config_set_paired_pending(bool pending);
 bool config_take_paired_pending(void);   // returns flag, then clears it (one-shot)
+
+// Remember a charge screen until another image has been painted successfully.
+bool config_lowbatt_screen_pending(void);
+esp_err_t config_set_lowbatt_screen(bool pending);

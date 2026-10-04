@@ -18,6 +18,8 @@
 
 bool relay_ready(void);            // holds a complete mailbox identity + frame key
 bool relay_pairing_pending(void);  // configured but not yet paired
+// The relay answered this wake, including a pending revocation check.
+bool relay_connection_ok(void);
 
 typedef enum {
     RELAY_PAIR_IDLE = 0,   // nothing to do (no code, or already paired)
@@ -27,14 +29,17 @@ typedef enum {
     RELAY_PAIR_ERROR,      // transient (network/parse); safe to retry
 } relay_pair_result_t;
 
-// Advance the pairing rendezvous by one step. Radio must be up. The POST happens
-// exactly once (the persisted private scalar is the latch); the poll may span
-// many wakes. No-op once paired.
+// Advance pairing while the radio is up. Pending submissions reuse the saved
+// key across retries and sleeps. Completed pairing is checked before resubmission.
 relay_pair_result_t relay_pair_step(void);
 
 // Full relay wake cycle: conditional frame fetch (staged into framebuf()),
 // status POST (carrying a pending button, if any), config sync. Returns next_poll_s.
 int relay_run_loop(const char *button, uint32_t button_event_id);
+
+// Release the connection after pairing, mailbox requests and any button polling.
+// Call before stopping WiFi, including when a request or pairing step failed.
+void relay_end_wake(void);
 
 // One conditional frame fetch into framebuf(); true if a NEW frame was staged
 // (relay_pending_frame() then returns it). Used by the post-button window.

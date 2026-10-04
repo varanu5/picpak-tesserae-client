@@ -135,8 +135,12 @@ void config_set_etag(const char *etag) {
 }
 
 void config_set_wifi(const char *ssid, const char *pass) {
+    char old_ssid[33], old_pass[65];
+    bool same = config_get_wifi(old_ssid, sizeof old_ssid, old_pass, sizeof old_pass)
+                && ssid && strcmp(ssid, old_ssid) == 0;
     if (ssid && ssid[0]) nvs_set_str_commit(NS_WIFI, "ssid", ssid);
-    if (pass && pass[0]) nvs_set_str_commit(NS_WIFI, "pass", pass);  // blank => keep existing
+    if (pass && pass[0]) nvs_set_str_commit(NS_WIFI, "pass", pass);
+    else if (!same) nvs_set_str_commit(NS_WIFI, "pass", "");
     if (ssid && ssid[0]) {
         nvs_handle_t h;
         if (nvs_open(NS_WIFI, NVS_READWRITE, &h) == ESP_OK) {
@@ -356,12 +360,14 @@ static bool nvs_get_blob32(const char *ns, const char *key, uint8_t out[32]) {
     nvs_close(h);
     return ok;
 }
-static void nvs_set_blob32_commit(const char *ns, const char *key, const uint8_t in[32]) {
+static esp_err_t nvs_set_blob32_commit(const char *ns, const char *key, const uint8_t in[32]) {
     nvs_handle_t h;
-    if (nvs_open(ns, NVS_READWRITE, &h) != ESP_OK) return;
-    nvs_set_blob(h, key, in, 32);
-    nvs_commit(h);
+    esp_err_t err = nvs_open(ns, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_blob(h, key, in, 32);
+    if (err == ESP_OK) err = nvs_commit(h);
     nvs_close(h);
+    return err;
 }
 
 bool config_relay_ready(void) {
@@ -383,7 +389,7 @@ void config_set_relay_url(const char *v)       { nvs_set_str_commit(NS_RELAY, "u
 void config_get_relay_code(char *o, size_t n)  { nvs_get_str_or_empty(NS_RELAY, "code", o, n); }
 void config_set_relay_code(const char *v)      { nvs_set_str_commit(NS_RELAY, "code", v ? v : ""); }
 bool config_get_relay_priv(uint8_t p[32])      { return nvs_get_blob32(NS_RELAY, "priv", p); }
-void config_set_relay_priv(const uint8_t p[32]) { nvs_set_blob32_commit(NS_RELAY, "priv", p); }
+esp_err_t config_set_relay_priv(const uint8_t p[32]) { return nvs_set_blob32_commit(NS_RELAY, "priv", p); }
 void config_get_relay_install(char *o, size_t n){ nvs_get_str_or_empty(NS_RELAY, "install", o, n); }
 void config_get_relay_device(char *o, size_t n) { nvs_get_str_or_empty(NS_RELAY, "device", o, n); }
 void config_get_relay_token(char *o, size_t n)  { nvs_get_str_or_empty(NS_RELAY, "token", o, n); }
@@ -423,4 +429,33 @@ void config_forget_relay_pairing(void) {
     nvs_commit(h);
     nvs_close(h);
     // "url" deliberately kept.
+}
+
+bool config_lowbatt_screen_pending(void) {
+    nvs_handle_t h;
+    uint8_t pending = 0;
+    if (nvs_open(NS_STATE, NVS_READONLY, &h) != ESP_OK) return false;
+    nvs_get_u8(h, "batt_screen", &pending);
+    nvs_close(h);
+    return pending != 0;
+}
+
+esp_err_t config_set_lowbatt_screen(bool pending) {
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(NS_STATE, NVS_READWRITE, &h);
+    if (err == ESP_OK) {
+        uint8_t current = 0;
+        esp_err_t read = nvs_get_u8(h, "batt_screen", &current);
+        if ((read == ESP_OK && current == (uint8_t)pending) ||
+            (read == ESP_ERR_NVS_NOT_FOUND && !pending)) {
+            nvs_close(h);
+            return ESP_OK;
+        }
+        err = nvs_set_u8(h, "batt_screen", (uint8_t)pending);
+        if (err == ESP_OK) err = nvs_commit(h);
+        nvs_close(h);
+    }
+    if (err != ESP_OK)
+        ESP_LOGW(TAG, "battery screen state not saved: %s", esp_err_to_name(err));
+    return err;
 }

@@ -10,8 +10,10 @@
 #include "power.h"
 #include "board.h"
 #include "defaults.h"
+#include "http_redirect.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <strings.h>   // strcasecmp
 #include "esp_attr.h"  // RTC_DATA_ATTR
@@ -25,6 +27,7 @@ static char s_pending_etag[80];        // ETag of a frame staged but not yet pai
 static char s_advertised_cfg_etag[80]; // config etag advertised by this wake's status
 static bool s_have_advertised_cfg;
 static bool s_frame_pending;           // framebuf() holds a fresh relay frame this wake
+static bool s_connection_ok;
 
 // Consecutive wakes whose device-token requests were answered 401. Since server
 // v0.240.0 a revoked/superseded pairing deletes the token record, so 401 from any
@@ -46,12 +49,15 @@ static bool s_auth_noted_this_wake;
 // (timeout/5xx/DNS) is left alone — it says nothing about the token.
 static void note_auth(int status) {
     if (status == 401) {
+        // Let the existing revocation check finish before requiring setup.
+        s_connection_ok = true;
         if (s_auth_noted_this_wake) return;
         s_auth_noted_this_wake = true;
         s_auth_fail_streak++;
         ESP_LOGW(TAG, "relay answered 401 (streak %u); pairing may be revoked",
                  (unsigned)s_auth_fail_streak);
     } else if (status == 304 || (status >= 200 && status < 300)) {
+        s_connection_ok = true;
         s_auth_fail_streak = 0;
         s_auth_noted_this_wake = false;
     }
@@ -68,108 +74,184 @@ void relay_forget_revoked_pairing(void) {
 #define RELAY_JSON_MAX  2048
 #define RELAY_HTTP_MS   10000
 
-// ---- small JSON HTTP helper ---------------------------------------------
-// Pairing and status are tiny JSON round trips. Frames/config go through
-// relay_get_sealed() (streamed into a sized malloc). crt bundle is attached only
-// for https:// (attaching it on plain http mis-configures the client) -- matches
-// rest_handler.c, and lets a self-hosted http:// Worker work for bench testing.
-typedef struct { char *buf; size_t cap; size_t len; bool overflow; } rx_t;
+// The connection spans the mailbox requests and the optional button window.
+static esp_http_client_handle_t s_http;
+static char s_http_origin[320];
+
+void relay_end_wake(void) {
+    if (s_http) esp_http_client_cleanup(s_http);
+    s_http = NULL;
+    s_http_origin[0] = '\0';
+}
+
+static bool relay_http_origin(const char *url, char *out, size_t cap) {
+    size_t scheme = strncmp(url, "https://", 8) == 0 ? 8 :
+                    strncmp(url, "http://", 7) == 0 ? 7 : 0;
+    if (!scheme) return false;
+    size_t authority = strcspn(url + scheme, "/?#");
+    size_t len = scheme + authority;
+    if (!authority || len >= cap || memchr(url + scheme, '@', authority)) return false;
+    memcpy(out, url, len);
+    out[len] = '\0';
+    return true;
+}
+
+typedef struct {
+    char *buf;
+    size_t cap, len;
+    bool sealed, overflow, headers_seen, redirected;
+    bool redirect_allowed;
+    char *etag;
+    size_t etag_cap;
+} rx_t;
+
 static esp_err_t on_evt(esp_http_client_event_t *e) {
-    if (e->event_id != HTTP_EVENT_ON_DATA) return ESP_OK;
     rx_t *rx = e->user_data;
-    if (!rx || !rx->buf) return ESP_OK;
-    if (rx->len + e->data_len >= rx->cap) { rx->overflow = true; return ESP_OK; }
-    memcpy(rx->buf + rx->len, e->data, e->data_len);
-    rx->len += e->data_len; rx->buf[rx->len] = '\0';
+    if (!rx) return ESP_OK;
+    if (e->event_id == HTTP_EVENT_ON_HEADER) {
+        rx->headers_seen = true;
+        if (rx->etag && strcasecmp(e->header_key, "ETag") == 0)
+            strlcpy(rx->etag, e->header_value, rx->etag_cap);
+        else if (strcasecmp(e->header_key, "Location") == 0)
+            rx->redirect_allowed = http_redirect_allowed(s_http_origin, e->header_value);
+    } else if (e->event_id == HTTP_EVENT_REDIRECT) {
+        rx->redirected = true;
+        if (!rx->sealed && rx->redirect_allowed) {
+            rx->redirect_allowed = false;
+            rx->len = 0;
+            rx->overflow = false;
+            if (rx->buf) rx->buf[0] = '\0';
+            esp_http_client_set_redirection(e->client);
+        } else {
+            ESP_LOGW(TAG, "redirect refused, use the direct relay URL");
+        }
+    } else if (e->event_id == HTTP_EVENT_ON_DATA) {
+        int status = esp_http_client_get_status_code(e->client);
+        if (status >= 300 && status < 400) return ESP_OK;
+        if (rx->sealed) {
+            if (status != 200) return ESP_OK;
+            if (!rx->buf && !rx->overflow) {
+                int64_t len = esp_http_client_get_content_length(e->client);
+                if (len <= 0 || len > INT_MAX) rx->overflow = true;
+                else {
+                    rx->cap = (size_t)len;
+                    rx->buf = malloc(rx->cap);
+                    if (!rx->buf) rx->overflow = true;
+                }
+            }
+        }
+        size_t limit = rx->sealed ? rx->cap : (rx->cap ? rx->cap - 1 : 0);
+        if (rx->buf && !rx->overflow && (size_t)e->data_len <= limit - rx->len) {
+            memcpy(rx->buf + rx->len, e->data, e->data_len);
+            rx->len += e->data_len;
+            if (!rx->sealed) rx->buf[rx->len] = '\0';
+        } else rx->overflow = true;
+    }
     return ESP_OK;
 }
-// One small JSON request. body==NULL means GET. Returns HTTP status or <0.
-static int relay_json(const char *url, const char *method, const char *body,
+
+static int relay_request(const char *url, const char *body, const char *bearer,
+                         const char *etag, rx_t *rx) {
+    char origin[sizeof(s_http_origin)] = {0};
+    bool have_origin = relay_http_origin(url, origin, sizeof(origin));
+    if (!have_origin || strcasecmp(origin, s_http_origin) != 0) relay_end_wake();
+    bool reused = s_http != NULL;
+    rx_t initial = *rx;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        *rx = initial;
+        if (!rx->sealed && rx->buf) rx->buf[0] = '\0';
+        if (rx->etag && rx->etag_cap) rx->etag[0] = '\0';
+        if (!s_http) {
+            esp_http_client_config_t cfg = {
+                .url = url, .event_handler = on_evt, .user_data = rx,
+                .timeout_ms = RELAY_HTTP_MS, .buffer_size = 2048, .buffer_size_tx = 1024,
+                .disable_auto_redirect = true,
+            };
+            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            s_http = esp_http_client_init(&cfg);
+            if (!s_http) return -1;
+            strlcpy(s_http_origin, origin, sizeof(s_http_origin));
+        }
+        esp_err_t err = esp_http_client_set_user_data(s_http, rx);
+        if (err == ESP_OK) err = esp_http_client_set_url(s_http, url);
+        if (err == ESP_OK) err = esp_http_client_set_method(s_http, body ? HTTP_METHOD_POST : HTTP_METHOD_GET);
+        if (err == ESP_OK) {
+            err = esp_http_client_set_post_field(s_http, NULL, 0);
+            if (err == ESP_ERR_NOT_FOUND) err = ESP_OK;
+        }
+        const char *headers[] = {"Authorization", "If-None-Match", "Content-Type", "Content-Length"};
+        for (size_t i = 0; i < sizeof(headers) / sizeof(headers[0]); i++) {
+            if (err == ESP_OK) {
+                err = esp_http_client_set_header(s_http, headers[i], NULL);
+                if (err == ESP_ERR_NOT_FOUND) err = ESP_OK;
+            }
+        }
+        char auth[300];
+        if (err == ESP_OK && bearer && bearer[0]) {
+            snprintf(auth, sizeof(auth), "Bearer %s", bearer);
+            err = esp_http_client_set_header(s_http, "Authorization", auth);
+        }
+        if (err == ESP_OK && etag && etag[0]) err = esp_http_client_set_header(s_http, "If-None-Match", etag);
+        if (err == ESP_OK && body) {
+            err = esp_http_client_set_header(s_http, "Content-Type", "application/json");
+            if (err == ESP_OK) err = esp_http_client_set_post_field(s_http, body, strlen(body));
+        }
+        if (err == ESP_OK) err = esp_http_client_reset_redirect_counter(s_http);
+        if (err == ESP_OK) err = esp_http_client_perform(s_http);
+        int status = esp_http_client_get_status_code(s_http);
+        bool complete = err == ESP_OK && esp_http_client_is_complete_data_received(s_http);
+        bool persistent = complete && esp_http_client_is_persistent_connection(s_http);
+        esp_http_client_set_user_data(s_http, NULL);
+        if (!persistent || rx->redirected || rx->overflow || !have_origin) relay_end_wake();
+        // Retry only a GET with no response. A status POST may carry a button press.
+        if (!complete && !rx->headers_seen && reused && attempt == 0 && !body) {
+            relay_end_wake();
+            if (rx->sealed) free(rx->buf);
+            ESP_LOGI(TAG, "connection closed before response, retrying GET");
+            continue;
+        }
+        if (!complete && !(rx->headers_seen && (status == 401 || status == 403))) {
+            ESP_LOGW(TAG, "request failed: %s", esp_err_to_name(err));
+            return -1;
+        }
+        if (rx->overflow) {
+            ESP_LOGW(TAG, "response does not fit its buffer");
+            return -1;
+        }
+        return status;
+    }
+    return -1;
+}
+
+static int relay_json(const char *url, const char *body,
                       const char *bearer, char *out, size_t out_cap) {
-    if (out && out_cap) out[0] = '\0';
-    rx_t rx = { .buf = out, .cap = out_cap, .len = 0, .overflow = false };
-    esp_http_client_config_t cfg = {
-        .url = url, .event_handler = on_evt, .user_data = &rx,
-        .timeout_ms = RELAY_HTTP_MS, .buffer_size = 1024, .buffer_size_tx = 1024,
-    };
-    if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
-    if (!cli) return -1;
-    esp_http_client_set_method(cli, strcmp(method, "POST") == 0 ? HTTP_METHOD_POST : HTTP_METHOD_GET);
-    if (bearer && bearer[0]) {
-        char auth[300]; snprintf(auth, sizeof auth, "Bearer %s", bearer);
-        esp_http_client_set_header(cli, "Authorization", auth);
-    }
-    if (body) {
-        esp_http_client_set_header(cli, "Content-Type", "application/json");
-        esp_http_client_set_post_field(cli, body, (int)strlen(body));
-    }
-    esp_err_t err = esp_http_client_perform(cli);
-    int status = esp_http_client_get_status_code(cli);
-    esp_http_client_cleanup(cli);
-    if (err != ESP_OK && status <= 0) {
-        ESP_LOGW(TAG, "%s %s: %s", method, url, esp_err_to_name(err));
-        return -1;
-    }
-    if (rx.overflow) ESP_LOGW(TAG, "response truncated (> %u)", (unsigned)out_cap);
-    return status;
+    rx_t rx = { .buf = out, .cap = out_cap };
+    return relay_request(url, body, bearer, NULL, &rx);
 }
 
-// Capture the response ETag. esp_http_client_get_header() reads only REQUEST
-// headers, so the RESPONSE ETag has to come through the ON_HEADER event (which
-// fetch_headers() dispatches) — same pattern as rest_handler.c. Without this the
-// stored ETag stays empty, no If-None-Match is ever sent, and every wake 200s
-// and repaints the same frame instead of 304-ing.
-typedef struct { char *etag; size_t cap; } relay_hdr_ctx_t;
-static esp_err_t relay_hdr_evt(esp_http_client_event_t *e) {
-    if (e->event_id != HTTP_EVENT_ON_HEADER) return ESP_OK;
-    relay_hdr_ctx_t *h = e->user_data;
-    if (h && h->etag && e->header_key && strcasecmp(e->header_key, "ETag") == 0)
-        strlcpy(h->etag, e->header_value ? e->header_value : "", h->cap);
-    return ESP_OK;
-}
-
-// Conditional GET of a sealed blob. On 200, mallocs *buf (caller frees), sets
-// *len and captures the ETag. Returns HTTP status, or <0 on transport error.
 static int relay_get_sealed(const char *url, const char *bearer,
                             const char *in_etag, char *out_etag, size_t etag_cap,
                             uint8_t **buf, size_t *len) {
-    *buf = NULL; *len = 0; if (out_etag && etag_cap) out_etag[0] = '\0';
-    relay_hdr_ctx_t hc = { .etag = out_etag, .cap = etag_cap };
-    esp_http_client_config_t cfg = {
-        .url = url, .timeout_ms = RELAY_HTTP_MS, .buffer_size = 2048,
-        .event_handler = relay_hdr_evt, .user_data = &hc,
-    };
-    if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    esp_http_client_handle_t cli = esp_http_client_init(&cfg);
-    if (!cli) return -1;
-    if (bearer && bearer[0]) {
-        char auth[300]; snprintf(auth, sizeof auth, "Bearer %s", bearer);
-        esp_http_client_set_header(cli, "Authorization", auth);
-    }
-    if (in_etag && in_etag[0]) esp_http_client_set_header(cli, "If-None-Match", in_etag);
-    int status = -1;
-    if (esp_http_client_open(cli, 0) == ESP_OK) {
-        int clen = esp_http_client_fetch_headers(cli);   // content-length, or <0
-        status = esp_http_client_get_status_code(cli);
-        if (status == 200 && clen > 0) {
-            uint8_t *b = malloc((size_t)clen);
-            if (b) {
-                int got = 0, r;
-                while (got < clen && (r = esp_http_client_read(cli, (char *)b + got, clen - got)) > 0)
-                    got += r;
-                if (got == clen) { *buf = b; *len = (size_t)clen; }
-                else { free(b); status = -1; }
-            } else status = -1;
+    *buf = NULL;
+    *len = 0;
+    rx_t rx = { .sealed = true, .etag = out_etag, .etag_cap = etag_cap };
+    int status = relay_request(url, NULL, bearer, in_etag, &rx);
+    if (status == 200 && rx.buf && rx.len == rx.cap && !rx.overflow) {
+        *buf = (uint8_t *)rx.buf;
+        *len = rx.len;
+    } else {
+        free(rx.buf);
+        if (status == 200) {
+            relay_end_wake();
+            status = -1;
         }
     }
-    esp_http_client_close(cli);
-    esp_http_client_cleanup(cli);
     return status;
 }
 
 // ---- state ---------------------------------------------------------------
 bool relay_ready(void) { return config_relay_ready(); }
+bool relay_connection_ok(void) { return s_connection_ok; }
 bool relay_pairing_pending(void) {
     return config_relay_configured() && !config_relay_ready();
 }
@@ -179,7 +261,15 @@ bool relay_pairing_pending(void) {
 // or expired -- terminal, not something to retry into a lockout.
 static relay_pair_result_t pair_submit(const char *relay_url, const char *relay_code) {
     uint8_t priv[RELAY_PRIV_LEN], pub[RELAY_PUB_LEN];
-    relay_keypair(priv, pub);
+    if (!config_get_relay_priv(priv)) {
+        relay_keypair(priv, pub);
+        if (config_set_relay_priv(priv) != ESP_OK) {
+            ESP_LOGE(TAG, "could not save pairing key");
+            return RELAY_PAIR_ERROR;
+        }
+    } else {
+        relay_public_key(pub, priv);
+    }
 
     char pub_b64[RELAY_B64_KEY_CAP];
     if (!relay_b64url_encode(pub_b64, sizeof pub_b64, pub, sizeof pub))
@@ -198,7 +288,7 @@ static relay_pair_result_t pair_submit(const char *relay_url, const char *relay_
     char url[256];
     snprintf(url, sizeof url, "%s/v1/pair", relay_url);
     char resp[RELAY_JSON_MAX];
-    int st = relay_json(url, "POST", body, NULL, resp, sizeof resp);
+    int st = relay_json(url, body, NULL, resp, sizeof resp);
 
     if (st == 404) {
         ESP_LOGW(TAG, "pairing code rejected (expired or unknown); clearing");
@@ -210,9 +300,9 @@ static relay_pair_result_t pair_submit(const char *relay_url, const char *relay_
         return RELAY_PAIR_ERROR;
     }
 
-    // Persist the private key BEFORE reporting progress: pairing polls can span
-    // deep sleeps, and losing the scalar would strand the single-use code.
-    config_set_relay_priv(priv);
+    relay_pairing_t reply;
+    if (relay_parse_ready(resp, strlen(resp), &reply) == RELAY_READY_PENDING)
+        s_connection_ok = true;
     ESP_LOGI(TAG, "pairing submitted (%dx%d); waiting for the home instance", EPD_W, EPD_H);
     return RELAY_PAIR_WAITING;
 }
@@ -223,7 +313,7 @@ static relay_pair_result_t pair_poll(const char *relay_url, const char *relay_co
     char url[256];
     snprintf(url, sizeof url, "%s/v1/pair/%s", relay_url, relay_code);
     char resp[RELAY_JSON_MAX];
-    int st = relay_json(url, "GET", NULL, NULL, resp, sizeof resp);
+    int st = relay_json(url, NULL, NULL, resp, sizeof resp);
 
     if (st == 404) {
         ESP_LOGW(TAG, "pairing code expired before completion; clearing");
@@ -235,6 +325,7 @@ static relay_pair_result_t pair_poll(const char *relay_url, const char *relay_co
     relay_pairing_t pr;
     switch (relay_parse_ready(resp, strlen(resp), &pr)) {
     case RELAY_READY_PENDING:
+        s_connection_ok = true;
         return RELAY_PAIR_WAITING;      // home has not completed it yet
     case RELAY_READY_MALFORMED:
         ESP_LOGE(TAG, "pairing response malformed or missing a field");
@@ -258,6 +349,7 @@ static relay_pair_result_t pair_poll(const char *relay_url, const char *relay_co
     }
 
     config_set_relay_paired(pr.install_id, pr.device_id, pr.device_token, key);
+    s_connection_ok = true;
     config_set_relay_etag("");          // new mailbox: nothing to match
     memset(key, 0, sizeof key);
     ESP_LOGI(TAG, "paired: install=%s device=%s", pr.install_id, pr.device_id);
@@ -271,21 +363,26 @@ relay_pair_result_t relay_pair_step(void) {
     if (!url[0] || !code[0]) return RELAY_PAIR_IDLE;
     if (config_relay_ready()) return RELAY_PAIR_IDLE;
     uint8_t priv[RELAY_PRIV_LEN];
-    return config_get_relay_priv(priv) ? pair_poll(url, code) : pair_submit(url, code);
+    if (config_get_relay_priv(priv)) {
+        relay_pair_result_t result = pair_poll(url, code);
+        if (result != RELAY_PAIR_WAITING) return result;
+    }
+    // A lost submission reply must reuse the same key, even across sleep.
+    return pair_submit(url, code);
 }
 
 // ---- frames --------------------------------------------------------------
 // Fetch + unseal the current frame, staging plaintext into framebuf(). Sets
 // s_frame_pending on a new frame. Returns true if framebuf() was updated.
 static bool relay_fetch_frame_into_framebuf(void) {
-    s_frame_pending = false;
     if (!config_relay_ready()) return false;
     char url[320], base[160], install[64], device[64], token[256], etag_in[80];
     config_get_relay_url(base, sizeof base);
     config_get_relay_install(install, sizeof install);
     config_get_relay_device(device, sizeof device);
     config_get_relay_token(token, sizeof token);
-    config_get_relay_etag(etag_in, sizeof etag_in);
+    if (s_frame_pending) strlcpy(etag_in, s_pending_etag, sizeof etag_in);
+    else config_get_relay_etag(etag_in, sizeof etag_in);
     if (!relay_mailbox_url(url, sizeof url, base, install, device, "frame")) {
         ESP_LOGE(TAG, "cannot build frame URL"); return false;
     }
@@ -318,6 +415,12 @@ static bool relay_fetch_frame_into_framebuf(void) {
                  (unsigned)plain_len, (unsigned)EPD_FB_BYTES);
         free(blob);
         config_set_relay_etag("");
+        return false;
+    }
+    if (s_frame_pending &&
+        ((etag_out[0] && !strcmp(etag_out, s_pending_etag)) ||
+         (!etag_out[0] && !memcmp(framebuf(), plain, EPD_FB_BYTES)))) {
+        free(blob);
         return false;
     }
     memcpy(framebuf(), plain, EPD_FB_BYTES);
@@ -367,7 +470,7 @@ static void relay_post_status(const char *button, uint32_t button_event_id) {
                  button, (unsigned long)button_event_id);
 
     char resp[RELAY_JSON_MAX];
-    int st = relay_json(url, "POST", body, token, resp, sizeof resp);
+    int st = relay_json(url, body, token, resp, sizeof resp);
     note_auth(st);
     if (st < 200 || st >= 300) { ESP_LOGW(TAG, "status post -> %d", st); return; }
 

@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "epd_driver.h"
+#include "log_capture.h"
 #include "board.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
@@ -20,6 +21,9 @@ static int bus_init_error, add_error, gpio_error, bus_frees;
 static bool fail_all, stuck, fault_busy, fault_used;
 static int64_t now, busy_start, busy_end, next_command_at;
 static uint8_t fb[EPD_FB_BYTES];
+static diag_paint_t last_failure;
+static unsigned failure_reports;
+void log_capture_paint_error(diag_paint_t failure) { last_failure=failure; failure_reports++; }
 
 static void clear_probe(void) {
     memset(records, 0, sizeof(records)); nrecords = 0;
@@ -28,6 +32,7 @@ static void clear_probe(void) {
     fail_all = stuck = fault_busy = fault_used = false;
     now = busy_start = busy_end = next_command_at = 0;
     bus_init_error = add_error = gpio_error = 0;
+    last_failure=DIAG_PAINT_NONE; failure_reports=0;
 }
 int64_t esp_timer_get_time(void) { return now; }
 void vTaskDelay(TickType_t t) { assert(t > 0); now += (int64_t)t * 10000; }
@@ -120,6 +125,7 @@ int main(int argc, char **argv) {
     size_t injected=0;
     for(mode=0;mode<3;mode++) {
         clear_probe(); assert(epd_present(fb)==ESP_OK);
+        assert(failure_reports==0);
         int successful_transfers=transfers;
         assert(reset_count==1 && !count_cmd(0x70));
         record_t *r=find_cmd(0x10); assert(r->n==sizeof fb && !memcmp(r->data,fb,sizeof fb));
@@ -151,12 +157,17 @@ int main(int argc, char **argv) {
             clear_probe();timeout_cmd=busy_commands[i];
             assert(epd_present(fb)==ESP_ERR_TIMEOUT);
             assert(fault_used && reset_count==2 && now<52000000);
+            assert(failure_reports==1);
+            assert(last_failure==(timeout_cmd==0x12 ? DIAG_PAINT_REFRESH_TIMEOUT
+                : (timeout_cmd==0x00 || timeout_cmd==0x61 || timeout_cmd==0x65)
+                ? DIAG_PAINT_INIT_FAILED : DIAG_PAINT_READY_TIMEOUT));
             assert(records[nrecords-1].cmd==0x07 && count_cmd(0x10)<=1);
         }
     }
     mode=EPD_WAVE_5S;
     clear_probe(); stuck=true;
     assert(epd_present(fb)==ESP_ERR_TIMEOUT && transfers==0 && now<11000000);
+    assert(failure_reports==1 && last_failure==DIAG_PAINT_INIT_FAILED);
     clear_probe(); fail_all=true;
     assert(epd_present(fb)==ESP_FAIL && transfers==2 && nrecords==0);
     clear_probe(); assert(epd_present(fb)==ESP_OK); // retry after a persistent fault is removed

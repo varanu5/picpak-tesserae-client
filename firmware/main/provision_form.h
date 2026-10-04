@@ -9,6 +9,8 @@ typedef enum { PROVFORM_URL_OK, PROVFORM_URL_EMPTY, PROVFORM_URL_BADSCHEME } pro
 
 void provform_url_decode(char *s);
 void provform_html_escape(const char *src, char *dst, size_t dst_sz);
+typedef enum { PROVFORM_FIELD_INVALID = -1, PROVFORM_FIELD_MISSING, PROVFORM_FIELD_OK } provform_field_result_t;
+provform_field_result_t provform_parse_field(const char *body, const char *key, char *dst, size_t dst_sz);
 bool provform_field(const char *body, const char *key, char *dst, size_t dst_sz);
 provform_url_result_t provform_normalize_server_url(char *url, size_t url_sz);
 

@@ -133,7 +133,8 @@ packs to `0x1b`. This matches the existing PicPak driver and Tesserae renderer.
 
 Run `tools/test_host.sh` for the C receiver, cross-platform BLE crypto vector,
 NVS mode/key persistence and revocation, and existing maintenance regressions.
-Run `tools/build_firmware.sh` for the ESP32-C3 image and 2 MiB slot size check.
+Release applications must fit one 4 MiB slot. See the
+[installation instructions](../README.md#step-2-flash-the-release-build) for the complete release package.
 Companion has `BLEPhotoTests` (packing/orientation/crop/ACK/keychain) and PicPak
 UI journeys. Radio UI fixtures exercise the real manager and encoder but replace
 the physical peripheral; they do not establish BLE interoperability or power use.

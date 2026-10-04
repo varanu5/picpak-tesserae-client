@@ -22,6 +22,9 @@
 int rest_run_loop(esp_reset_reason_t reset_reason,
                   const char *button, uint32_t button_event_id);
 
+// A valid server response was received during this cycle, even without a frame.
+bool rest_connection_ok(void);
+
 // After rest_run_loop: the validated new frame to paint this wake, or NULL
 // (304/204/error). Paint it with the radio already off, then call
 // rest_frame_painted() to persist its ETag — only after a successful paint, so

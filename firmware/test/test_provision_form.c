@@ -33,6 +33,25 @@ int main(void) {
     assert(provform_field(body, "waveform", v, sizeof v) && strcmp(v, "5s") == 0);
     assert(!provform_field(body, "missing", v, sizeof v));
 
+    char ssid[33], pass[65];
+    assert(provform_field("ssid=abcdefghijklmnopqrstuvwx%26%26%26%26", "ssid", ssid, sizeof ssid));
+    assert(!strcmp(ssid, "abcdefghijklmnopqrstuvwx&&&&"));
+    char encoded[200] = "pass=";
+    for (int i=0; i<64; i++) strcat(encoded, "%21");
+    assert(provform_field(encoded, "pass", pass, sizeof pass) && strlen(pass)==64);
+    for (int i=0; i<64; i++) assert(pass[i]=='!');
+    assert(provform_field("ssid=Caf%C3%A9+%26+home", "ssid", ssid, sizeof ssid));
+    assert(!strcmp(ssid, "Caf\xc3\xa9 & home"));
+    assert(provform_parse_field("ssid=12345", "ssid", ssid, 5)==PROVFORM_FIELD_INVALID);
+    assert(!ssid[0]);
+    const char *bad_fields[]={"ssid=x%00y", "ssid=x%2", "ssid=x%zz", "ssid=x%"};
+    for (size_t i=0; i<sizeof bad_fields/sizeof bad_fields[0]; i++) {
+        assert(provform_parse_field(bad_fields[i], "ssid", ssid, sizeof ssid)==PROVFORM_FIELD_INVALID);
+        assert(!ssid[0]);
+    }
+    assert(provform_parse_field("pass=", "pass", pass, sizeof pass)==PROVFORM_FIELD_OK && !pass[0]);
+    assert(provform_parse_field("ssid=x", "pass", pass, sizeof pass)==PROVFORM_FIELD_MISSING);
+
     // normalize_server_url
     char u[96];
     strcpy(u, "tesserae.local:8765");

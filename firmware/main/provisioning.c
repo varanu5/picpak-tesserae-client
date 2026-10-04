@@ -5,7 +5,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "provisioning.h"
+#include "setup_identity.h"
 #include "provision_form.h"
+#include "wifi_credentials.h"
 #include "mqtt_parse.h"
 #include "config_store.h"
 #include "epd_driver.h"   // epd_waveform_t (portal <-> driver value contract)
@@ -222,7 +224,7 @@ static const char k_form_wifi_fmt[] =
 "<label for=\"wifi-pw\">Password</label>"
 "<input id=\"wifi-pw\" name=\"pass\" type=\"password\" maxlength=\"64\" autocomplete=\"off\">"
 "<button type=\"button\" data-toggle=\"wifi-pw\" aria-label=\"Show password\">Show</button>"
-"<p class=\"hint\">Leave blank to keep the current password.</p>"
+"<p class=\"hint\">Leave blank to keep the password for the same network. For a different open network, leave it blank.</p>"
 "</div>"
 "</section>";
 
@@ -572,6 +574,8 @@ static esp_err_t h_save(httpd_req_t *req)
         if (n <= 0) break;
         total += n;
     }
+    if (total != (int)req->content_len)
+        return render_form(req, "Submission interrupted. Please try again.");
     body[total] = '\0';
 
     char ssid[33] = {0}, pass[65] = {0}, transport[8] = {0}, waveform[8] = {0};
@@ -579,18 +583,21 @@ static esp_err_t h_save(httpd_req_t *req)
     char server_url[192] = {0}, pairing_code[16] = {0}, device_id[33] = {0};
     char relay_url[192] = {0}, relay_code[40] = {0};
 
-    bool have_ssid = provform_field(body, "ssid", ssid, sizeof ssid) && ssid[0];
-    bool have_pass = provform_field(body, "pass", pass, sizeof pass) && pass[0];
-    provform_field(body, "transport",   transport,   sizeof transport);
-    provform_field(body, "waveform",    waveform,    sizeof waveform);
-    bool have_uri  = provform_field(body, "mqtt_uri", mqtt_uri, sizeof mqtt_uri) && mqtt_uri[0];
-    provform_field(body, "mqtt_user",  mqtt_user,   sizeof mqtt_user);
-    bool have_mpw  = provform_field(body, "mqtt_pass", mqtt_pass, sizeof mqtt_pass) && mqtt_pass[0];
-    provform_field(body, "server_url",  server_url,  sizeof server_url);
-    provform_field(body, "pairing_code", pairing_code, sizeof pairing_code);
-    provform_field(body, "relay_url",   relay_url,   sizeof relay_url);
-    provform_field(body, "relay_code",  relay_code,  sizeof relay_code);
-    bool have_devid = provform_field(body, "device_id", device_id, sizeof device_id) && device_id[0];
+    struct { const char *key; char *out; size_t cap; } fields[] = {
+        {"ssid", ssid, sizeof ssid}, {"pass", pass, sizeof pass},
+        {"transport", transport, sizeof transport}, {"waveform", waveform, sizeof waveform},
+        {"mqtt_uri", mqtt_uri, sizeof mqtt_uri}, {"mqtt_user", mqtt_user, sizeof mqtt_user},
+        {"mqtt_pass", mqtt_pass, sizeof mqtt_pass}, {"server_url", server_url, sizeof server_url},
+        {"pairing_code", pairing_code, sizeof pairing_code}, {"device_id", device_id, sizeof device_id},
+        {"relay_url", relay_url, sizeof relay_url}, {"relay_code", relay_code, sizeof relay_code},
+    };
+    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
+        if (provform_parse_field(body, fields[i].key, fields[i].out, fields[i].cap)
+                == PROVFORM_FIELD_INVALID)
+            return render_form(req, "A field is too long or has invalid encoding. Please check your entries.");
+    }
+    bool have_ssid = ssid[0], have_pass = pass[0], have_uri = mqtt_uri[0];
+    bool have_mpw = mqtt_pass[0], have_devid = device_id[0];
 
     // Cloud relay is its own transport; otherwise REST unless explicitly MQTT, so
     // a malformed/absent field still lands on the recommended transport.
@@ -605,6 +612,8 @@ static esp_err_t h_save(httpd_req_t *req)
                    (strcmp(waveform, "10s") == 0)    ? EPD_WAVE_10S : DEFAULT_WAVEFORM;
 
     if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
+    if (!wifi_credentials_valid(ssid, pass))
+        return render_form(req, "WiFi needs an SSID up to 32 bytes and a password of 8 to 63 bytes, or a 64 digit hexadecimal key. Leave the password blank for an open network.");
     // Device id is optional (blank = auto-derive from MAC), but if given it must
     // match what the server accepts, else discovery would silently 400-loop.
     if (have_devid && !provform_device_id_valid(device_id))
@@ -638,7 +647,7 @@ static esp_err_t h_save(httpd_req_t *req)
              have_devid ? device_id : "(auto)",
              wave == EPD_WAVE_5S ? "5s" : wave == EPD_WAVE_NATIVE ? "native" : "10s");
 
-    config_set_wifi(ssid, have_pass ? pass : NULL);   // blank pass keeps existing
+    config_set_wifi(ssid, have_pass ? pass : NULL);
     config_set_waveform(wave);                         // refresh speed (all transports)
     // Device id is shared across transports. Blank = leave as-is (auto-derive
     // from MAC at pair time, or keep the server's canonical id once paired).
@@ -794,9 +803,11 @@ static void start_ap(void)
             .authmode = WIFI_AUTH_WPA2_PSK,
         },
     };
-    strncpy((char *)wc.ap.ssid,     PROVISION_AP_SSID, sizeof(wc.ap.ssid) - 1);
+    char ssid[SETUP_SSID_CAPACITY];
+    ESP_ERROR_CHECK(setup_ap_ssid(ssid));
+    memcpy(wc.ap.ssid, ssid, strlen(ssid));
     strncpy((char *)wc.ap.password, PROVISION_AP_PASS, sizeof(wc.ap.password) - 1);
-    wc.ap.ssid_len = strlen(PROVISION_AP_SSID);
+    wc.ap.ssid_len = strlen(ssid);
     if (strlen(PROVISION_AP_PASS) < 8) wc.ap.authmode = WIFI_AUTH_OPEN;
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
@@ -805,7 +816,7 @@ static void start_ap(void)
     // PicPak brownout guard: cap TX power before the radio transmits (as in STA).
     esp_wifi_set_max_tx_power(WIFI_TX_POWER_QDBM);
 
-    ESP_LOGI(TAG, "AP up: ssid=%s ip=192.168.4.1", PROVISION_AP_SSID);
+    ESP_LOGI(TAG, "AP up: ssid=%s ip=192.168.4.1", ssid);
 }
 
 static void start_http(void)
@@ -814,9 +825,9 @@ static void start_http(void)
     cfg.uri_match_fn = httpd_uri_match_wildcard;
     cfg.max_uri_handlers = 6;
     cfg.stack_size = 16384;   // render_form holds several KB of locals at once
-    // Phones flood the captive portal with parallel probe connections; without
-    // this the small socket pool exhausts and accept() bounces (errno 23). LRU
-    // purge recycles the oldest connection to accept a new one instead.
+    // Leave sockets for HTTP control, captive DNS and other network services.
+    // Recycle idle browser connections before the shared socket pool fills.
+    cfg.max_open_sockets = 4;
     cfg.lru_purge_enable = true;
 
     ESP_ERROR_CHECK(httpd_start(&s_httpd, &cfg));

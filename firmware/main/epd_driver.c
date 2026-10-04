@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "epd_driver.h"
+#include "log_capture.h"
 #include "epd_init_seq.h"
 #include "epd_lut_5s.h"
 #include "epd_lut_10s.h"
@@ -19,6 +20,7 @@ static const char *TAG = "epd";
 static spi_device_handle_t s_spi;
 static bool s_spi_ready;
 static bool s_initialized;
+static bool s_refresh_timed_out;
 
 #define EPD_INIT_TIMEOUT_MS 5000
 #define EPD_POWER_TIMEOUT_MS 50000
@@ -165,7 +167,9 @@ esp_err_t epd_display(const uint8_t *fb) {
     EPD_TRY(epd_wait_busy(EPD_POWER_TIMEOUT_MS));
     EPD_TRY(epd_send(0x12, (const uint8_t[]){0x00}, 1));
     epd_delay_ms(20);
-    EPD_TRY(epd_wait_busy(EPD_POWER_TIMEOUT_MS));
+    esp_err_t refresh = epd_wait_busy(EPD_POWER_TIMEOUT_MS);
+    s_refresh_timed_out = refresh == ESP_ERR_TIMEOUT;
+    EPD_TRY(refresh);
     ESP_LOGI(TAG, "display done");
     return ESP_OK;
 }
@@ -183,10 +187,16 @@ esp_err_t epd_sleep(void) {
 
 esp_err_t epd_present(const uint8_t *fb) {
     if (!fb) return ESP_ERR_INVALID_ARG;
+    s_refresh_timed_out = false;
     esp_err_t err = epd_init();
+    bool init_failed = err != ESP_OK;
     if (err == ESP_OK) err = epd_display(fb);
     if (err == ESP_OK) err = epd_sleep();
     if (err != ESP_OK) {
+        diag_paint_t failure = init_failed ? DIAG_PAINT_INIT_FAILED
+            : s_refresh_timed_out ? DIAG_PAINT_REFRESH_TIMEOUT
+            : err == ESP_ERR_TIMEOUT ? DIAG_PAINT_READY_TIMEOUT : DIAG_PAINT_DISPLAY_FAILED;
+        log_capture_paint_error(failure);
         ESP_LOGW(TAG, "display cycle failed: %s", esp_err_to_name(err));
         // One bounded recovery attempt. Reset/reinitialize before shutdown rather
         // than sending commands into a timed-out refresh or a partial SPI payload.

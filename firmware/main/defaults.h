@@ -29,7 +29,7 @@
 #endif
 
 #ifndef FW_VERSION
-#define FW_VERSION          "0.9.7"
+#define FW_VERSION          "0.9.10"
 #endif
 #define DEVICE_KIND         "picpak_client"
 
@@ -106,7 +106,7 @@
 #define RELAY_BUTTON_POLL_MS       5000
 
 // --- Captive-portal provisioning ---
-#define PROVISION_AP_SSID          "Tesserae-Setup"
+#define PROVISION_AP_SSID          "Tesserae-Setup"  // Prefix before the MAC suffix
 #define PROVISION_AP_PASS          "tesserae"        // >= 8 chars
 #define BLE_MAINTENANCE_TIMEOUT_S  300
 #define PROVISION_PORTAL_TIMEOUT_S 600               // portal idle timeout -> deep sleep

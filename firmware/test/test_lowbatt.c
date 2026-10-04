@@ -55,7 +55,7 @@ int main(void) {
     r = d(3520, false, false, locked);
     assert(r.action == LOWBATT_NORMAL && !r.next.lock);
 
-    // force-resume (3 s hold) or USB wake overrides the gate even when locked + low, and
+    // force-resume (5 s hold) or USB wake overrides the gate even when locked + low, and
     // pre-loads the debounce so a single still-low next read re-arms (no wasted extra fetch)
     r = d(3100, /*force*/true, false, locked);
     assert(r.action == LOWBATT_NORMAL && !r.next.lock && r.next.low_streak == CFG.arm_streak - 1);
@@ -89,7 +89,11 @@ int main(void) {
 
     // locked + implausible read -> no false recovery, lock persists
     r = d(0, false, false, locked);
-    assert(r.action == LOWBATT_NORMAL && r.next.lock && r.next.last_mv == 3230);
+    assert(r.action == LOWBATT_STAY_LOW && r.next.lock && r.next.last_mv == 3230);
+    r = d(-1, false, false, locked);
+    assert(r.action == LOWBATT_STAY_LOW && r.next.lock);
+    r = d(2499, false, false, locked);
+    assert(r.action == LOWBATT_STAY_LOW && r.next.lock);
 
     // button wake with an implausible read must not corrupt the baseline
     r = d(0, true, false, locked);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "wifi_manager.h"
+#include "wifi_credentials.h"
 #include "config_store.h"
 #include "defaults.h"
 
@@ -80,8 +81,8 @@ static void on_evt(void *arg, esp_event_base_t base, int32_t id, void *data) {
 static esp_err_t attempt_connect(const char *ssid, const char *pass,
                                  const uint8_t *bssid, uint8_t chan, int max_retries) {
     wifi_config_t wc = {0};
-    strlcpy((char *)wc.sta.ssid, ssid, sizeof(wc.sta.ssid));
-    strlcpy((char *)wc.sta.password, pass, sizeof(wc.sta.password));
+    if (!wifi_credentials_copy(wc.sta.ssid, wc.sta.password, ssid, pass))
+        return ESP_ERR_INVALID_ARG;
     // Refuse to join an unencrypted AP when a password is stored — without the
     // threshold (default OPEN) a rogue open AP broadcasting our SSID would get
     // the bearer token sent to it in cleartext.

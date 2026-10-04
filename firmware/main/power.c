@@ -6,6 +6,7 @@
 #include "defaults.h"
 #include "battpct.h"
 #include "led.h"
+#include "wake_align.h"
 
 #include <stdlib.h>   // qsort
 #include "driver/gpio.h"
@@ -32,7 +33,10 @@ static int power_read_mv(void) {
     adc_oneshot_unit_init_cfg_t ucfg = { .unit_id = ADC_UNIT_1 };
     if (adc_oneshot_new_unit(&ucfg, &adc) != ESP_OK) return -1;   // failure sentinel (0 would read as a flat cell)
     adc_oneshot_chan_cfg_t ccfg = { .atten = ADC_ATTEN_DB_12, .bitwidth = ADC_BITWIDTH_DEFAULT };
-    adc_oneshot_config_channel(adc, BATT_ADC_CHANNEL, &ccfg);
+    if (adc_oneshot_config_channel(adc, BATT_ADC_CHANNEL, &ccfg) != ESP_OK) {
+        adc_oneshot_del_unit(adc);
+        return -1;
+    }
 
     enum { N = 20 };
     int s[N], got = 0;
@@ -54,8 +58,12 @@ static int power_read_mv(void) {
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     if (adc_cali_create_scheme_curve_fitting(&calcfg, &cali) == ESP_OK) {
-        adc_cali_raw_to_voltage(cali, raw_med, &pin_mv);
+        esp_err_t err = adc_cali_raw_to_voltage(cali, raw_med, &pin_mv);
         adc_cali_delete_scheme_curve_fitting(cali);
+        if (err != ESP_OK) {
+            adc_oneshot_del_unit(adc);
+            return -1;
+        }
     } else {
         pin_mv = (int)((raw_med / 4095.0f) * 3100.0f);   // fallback: crude linear
     }
@@ -137,7 +145,7 @@ btn_gesture_t power_boot_gesture(void) {
     return BTN_GESTURE_TAP;
 }
 
-static void enter_deep_sleep(uint32_t seconds) {
+static void enter_deep_sleep(uint32_t seconds, bool scheduled) {
     // Zero is the manual photo mode: GPIO wake only, no periodic radio work.
     if (seconds > SLEEP_INTERVAL_MAX_S) seconds = SLEEP_INTERVAL_MAX_S;
 
@@ -152,15 +160,22 @@ static void enter_deep_sleep(uint32_t seconds) {
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 
-    ESP_LOGI(TAG, "deep sleep %u s (button wake armed)", (unsigned)seconds);
+    uint64_t timer_us = (uint64_t)seconds * 1000000ULL;
+    if (scheduled) timer_us = wake_align_timer_us(seconds);
+    ESP_LOGI(TAG, "deep sleep %.3f s (button wake armed)", (double)timer_us / 1000000.0);
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    if (seconds) esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);
+    if (timer_us) esp_sleep_enable_timer_wakeup(timer_us);
     esp_deep_sleep_enable_gpio_wakeup(1ULL << PIN_BTN, ESP_GPIO_WAKEUP_GPIO_LOW);
     esp_deep_sleep_start();
 }
 
-void power_sleep_until_button(void) { enter_deep_sleep(0); }
+void power_sleep_until_button(void) { enter_deep_sleep(0, false); }
 void power_deep_sleep(uint32_t seconds) {
     if (seconds < SLEEP_INTERVAL_MIN_S) seconds = SLEEP_INTERVAL_MIN_S;
-    enter_deep_sleep(seconds);
+    enter_deep_sleep(seconds, false);
+}
+
+void power_scheduled_sleep(uint32_t seconds) {
+    if (seconds < SLEEP_INTERVAL_MIN_S) seconds = SLEEP_INTERVAL_MIN_S;
+    enter_deep_sleep(seconds, true);
 }

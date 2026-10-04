@@ -5,16 +5,17 @@
 #include "config_store.h"
 #include "defaults.h"
 #include "rest_button.h"
-#include "image_fetcher.h"
 #include "framebuf.h"
 #include "heartbeat.h"
+#include "log_capture.h"
 #include "board.h"
+#include "wake_align.h"
+#include "http_redirect.h"
 
 #include <string.h>
 #include <strings.h>   // strcasecmp
 #include <stdio.h>
 #include <stdlib.h>    // atoi
-#include <sys/time.h>  // settimeofday
 #include <time.h>
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
@@ -24,6 +25,7 @@
 
 static const char *TAG = "rest";
 static bool    s_frame_pending = false; // framebuf() holds a validated new frame for this wake
+static bool    s_connection_ok;
 static char    s_pending_etag[80];      // its ETag; persisted only after a successful paint
 
 // Generous headroom for the (small) JSON control responses: the status reply
@@ -36,6 +38,12 @@ typedef struct {
     int      len;
     int      cap;
     bool     overflow;      // set when the body outgrew cap (body is truncated)
+    bool     binary;
+    bool     log_upload;
+    size_t   upload_len;
+    bool     headers_seen;
+    bool     redirected;
+    bool     redirect_allowed;
     char     etag[80];
     int      retry_after;   // Retry-After response header (seconds), 0 if absent
     uint32_t server_date;   // Date response header as unix epoch, 0 if unparsed
@@ -70,23 +78,65 @@ static uint32_t parse_http_date(const char *v) {
     return (e > 1500000000LL) ? (uint32_t)e : 0;   // sanity: past ~2017
 }
 
+static esp_http_client_handle_t s_http;
+static char s_http_origin[320];
+
+static void http_end(void) {
+    if (s_http) esp_http_client_cleanup(s_http);
+    s_http = NULL;
+    s_http_origin[0] = '\0';
+}
+
+// A conservative match keeps different schemes, hosts and ports separate.
+static bool http_origin(const char *url, char *out, size_t cap) {
+    size_t scheme = strncmp(url, "https://", 8) == 0 ? 8 :
+                    strncmp(url, "http://", 7) == 0 ? 7 : 0;
+    if (!scheme) return false;
+    size_t authority = strcspn(url + scheme, "/?#");
+    size_t len = scheme + authority;
+    if (!authority || len >= cap || memchr(url + scheme, '@', authority)) return false;
+    memcpy(out, url, len);
+    out[len] = '\0';
+    return true;
+}
+
 static esp_err_t http_ev(esp_http_client_event_t *e) {
     resp_t *r = (resp_t *)e->user_data;
     if (!r) return ESP_OK;
     if (e->event_id == HTTP_EVENT_ON_HEADER) {
+        r->headers_seen = true;
         if (strcasecmp(e->header_key, "ETag") == 0)
             strlcpy(r->etag, e->header_value, sizeof(r->etag));
         else if (strcasecmp(e->header_key, "Retry-After") == 0)
             r->retry_after = atoi(e->header_value);
         else if (strcasecmp(e->header_key, "Date") == 0)
             r->server_date = parse_http_date(e->header_value);
+        else if (strcasecmp(e->header_key, "Location") == 0)
+            r->redirect_allowed = http_redirect_allowed(s_http_origin, e->header_value);
+    } else if (e->event_id == HTTP_EVENT_REDIRECT) {
+        r->redirected = true;
+        if (!r->binary && !r->log_upload && r->redirect_allowed) {
+            r->redirect_allowed = false;
+            r->len = 0;
+            r->overflow = false;
+            r->etag[0] = '\0';
+            r->retry_after = 0;
+            r->server_date = 0;
+            if (r->body) r->body[0] = '\0';
+            esp_http_client_set_redirection(e->client);
+        } else {
+            ESP_LOGW(TAG, "redirect refused, use the direct server URL");
+        }
     } else if (e->event_id == HTTP_EVENT_ON_DATA) {
-        if (r->body && r->len + e->data_len < r->cap) {
+        int status = esp_http_client_get_status_code(e->client);
+        if (status >= 300 && status < 400) return ESP_OK;
+        int limit = r->cap - (r->binary ? 0 : 1);
+        if (r->body && !r->overflow && e->data_len <= limit - r->len) {
             memcpy(r->body + r->len, e->data, e->data_len);
             r->len += e->data_len;
-            r->body[r->len] = '\0';
+            if (!r->binary) r->body[r->len] = '\0';
         } else if (r->body) {
-            r->overflow = true;   // response bigger than cap; body is truncated
+            r->overflow = true;
         }
     }
     return ESP_OK;
@@ -95,55 +145,107 @@ static esp_err_t http_ev(esp_http_client_event_t *e) {
 static int http_do(esp_http_client_method_t method, const char *url,
                    const char *bearer, const char *pairing, const char *if_none_match,
                    const char *body_json, resp_t *resp) {
-    esp_http_client_config_t cfg = {
-        .url = url, .method = method, .timeout_ms = 15000,
-        .event_handler = http_ev, .user_data = resp,
-    };
-    // CA bundle only for TLS: attaching it on plain http can mis-configure the
-    // client (reference-observed ESP_ERR_NOT_SUPPORTED). Publicly-trusted certs
-    // only (e.g. Let's Encrypt behind a reverse proxy); self-signed won't pass.
-    if (strncmp(url, "https://", 8) == 0)
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    esp_http_client_handle_t c = esp_http_client_init(&cfg);
-    if (!c) return -1;
-    char auth[160];
-    if (bearer && bearer[0]) {
-        snprintf(auth, sizeof(auth), "Bearer %s", bearer);
-        esp_http_client_set_header(c, "Authorization", auth);
-        esp_http_client_set_header(c, "X-Tesserae-Token", bearer);
+    char origin[sizeof(s_http_origin)] = {0};
+    bool have_origin = http_origin(url, origin, sizeof(origin));
+    if (!have_origin || strcasecmp(origin, s_http_origin) != 0) http_end();
+    bool reused = s_http != NULL;
+    resp_t initial = *resp;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        *resp = initial;
+        if (resp->body && !resp->binary) resp->body[0] = '\0';
+        int timeout = resp->log_upload ? LOG_CAPTURE_TIMEOUT_MS : (resp->binary ? 20000 : 15000);
+        if (!s_http) {
+            esp_http_client_config_t cfg = {
+                .url = url, .timeout_ms = timeout, .event_handler = http_ev,
+                .user_data = resp, .disable_auto_redirect = true,
+            };
+            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            s_http = esp_http_client_init(&cfg);
+            if (!s_http) return -1;
+            strlcpy(s_http_origin, origin, sizeof(s_http_origin));
+        }
+        esp_err_t err = esp_http_client_set_user_data(s_http, resp);
+        if (err == ESP_OK) err = esp_http_client_set_url(s_http, url);
+        if (err == ESP_OK) err = esp_http_client_set_method(s_http, method);
+        if (err == ESP_OK) err = esp_http_client_set_timeout_ms(s_http, timeout);
+        if (err == ESP_OK) {
+            err = esp_http_client_set_post_field(s_http, NULL, 0);
+            if (err == ESP_ERR_NOT_FOUND) err = ESP_OK;
+        }
+        // Headers belong to one request, including requests for signed images.
+        const char *headers[] = {"Authorization", "X-Tesserae-Token", "X-Pairing-Code",
+                                 "If-None-Match", "Content-Type", "Content-Length"};
+        for (size_t i = 0; i < sizeof(headers) / sizeof(headers[0]); i++) {
+            if (err == ESP_OK) {
+                err = esp_http_client_set_header(s_http, headers[i], NULL);
+                if (err == ESP_ERR_NOT_FOUND) err = ESP_OK;
+            }
+        }
+        char auth[160];
+        if (err == ESP_OK && bearer && bearer[0]) {
+            snprintf(auth, sizeof(auth), "Bearer %s", bearer);
+            err = esp_http_client_set_header(s_http, "Authorization", auth);
+            if (err == ESP_OK) err = esp_http_client_set_header(s_http, "X-Tesserae-Token", bearer);
+        }
+        if (err == ESP_OK && pairing && pairing[0])
+            err = esp_http_client_set_header(s_http, "X-Pairing-Code", pairing);
+        if (err == ESP_OK && if_none_match && if_none_match[0])
+            err = esp_http_client_set_header(s_http, "If-None-Match", if_none_match);
+        if (err == ESP_OK && body_json) {
+            err = esp_http_client_set_header(s_http, "Content-Type",
+                resp->log_upload ? "text/plain; charset=utf-8" : "application/json");
+            if (err == ESP_OK) err = esp_http_client_set_post_field(s_http, body_json,
+                resp->log_upload ? (int)resp->upload_len : (int)strlen(body_json));
+        }
+        if (err == ESP_OK) err = esp_http_client_reset_redirect_counter(s_http);
+        if (err == ESP_OK) err = esp_http_client_perform(s_http);
+        int status = esp_http_client_get_status_code(s_http);
+        bool complete = err == ESP_OK && esp_http_client_is_complete_data_received(s_http);
+        bool persistent = complete && esp_http_client_is_persistent_connection(s_http);
+        esp_http_client_set_user_data(s_http, NULL);
+        if (!persistent || resp->redirected || resp->overflow || !have_origin) http_end();
+        // Retry a stale connection once for GET. Never replay a pairing POST.
+        if (!complete && !resp->headers_seen && reused && attempt == 0 && method == HTTP_METHOD_GET) {
+            http_end();
+            ESP_LOGI(TAG, "connection closed before response, retrying GET");
+            continue;
+        }
+        // A real 401 must still renew the token when the client reports an auth error.
+        if (!complete && !(resp->headers_seen && (status == 401 || status == 403))) {
+            ESP_LOGW(TAG, "request failed: %s", esp_err_to_name(err));
+            return -1;
+        }
+        if (resp->overflow) ESP_LOGW(TAG, "response exceeds %d bytes", resp->cap);
+        if (resp->server_date && !resp->binary) wake_align_sync(resp->server_date);
+        return status;
     }
-    if (pairing && pairing[0]) esp_http_client_set_header(c, "X-Pairing-Code", pairing);
-    if (if_none_match && if_none_match[0]) esp_http_client_set_header(c, "If-None-Match", if_none_match);
-    if (body_json) {
-        esp_http_client_set_header(c, "Content-Type", "application/json");
-        esp_http_client_set_post_field(c, body_json, strlen(body_json));
-    }
-    esp_err_t err = esp_http_client_perform(c);
-    // Trust the status line even when perform() reports an error. A Bearer-token
-    // API 401 arrives with no WWW-Authenticate header, which makes esp_http_client
-    // auto-handling fail with ESP_ERR_NOT_SUPPORTED — yet the 401 status + body
-    // were received. Gating on err==ESP_OK (the old code) masked it as -1, so a
-    // revoked token surfaced as a network error and was never wiped/re-paired.
-    // Only a response-less failure (no status) is a real transport error.
-    int status = esp_http_client_get_status_code(c);
-    esp_http_client_cleanup(c);
-    if (status <= 0) {
-        ESP_LOGW(TAG, "%s: transport error: %s", url, esp_err_to_name(err));
+    return -1;
+}
+
+typedef struct {
+    const char *server, *device, *token;
+} log_destination_t;
+
+static bool upload_log(const char *body, size_t len, void *context) {
+    const log_destination_t *dest = context;
+    char url[256];
+    int n = snprintf(url, sizeof url, "%s/api/v1/device/%s/log", dest->server, dest->device);
+    if (n < 0 || (size_t)n >= sizeof url) return false;
+    resp_t response = { .log_upload = true, .upload_len = len };
+    int status = http_do(HTTP_METHOD_POST, url, dest->token, NULL, NULL, body, &response);
+    ESP_LOGI(TAG, "POST /log -> %d", status);
+    return status >= 200 && status < 300;
+}
+
+static int http_frame(const char *url) {
+    resp_t r = { .body = (char *)framebuf(), .cap = EPD_FB_BYTES, .binary = true };
+    int status = http_do(HTTP_METHOD_GET, url, NULL, NULL, NULL, NULL, &r);
+    if (status != 200 || r.overflow || r.len != EPD_FB_BYTES) {
+        http_end();
         return -1;
     }
-    if (resp) {
-        if (resp->overflow)
-            ESP_LOGW(TAG, "%s: response truncated at %d bytes", url, resp->cap);
-        // The server's Date header is an authoritative LAN wall clock: persist it
-        // so the C3 RTC stays accurate across sleeps without an SNTP round-trip.
-        // (https/mqtts cert validity still bootstraps via NTP in main.c — TLS
-        // needs a sane clock *before* this response's Date can arrive.)
-        if (resp->server_date) {
-            struct timeval tv = { .tv_sec = (time_t)resp->server_date, .tv_usec = 0 };
-            settimeofday(&tv, NULL);
-        }
-    }
-    return status;
+    ESP_LOGI(TAG, "fetched %d bytes (HTTP %d)", r.len, status);
+    return r.len;
 }
 
 // Resolve a (possibly relative) frame URL against the server origin — the
@@ -249,6 +351,9 @@ static int ensure_paired(const char *server) {
     int retry = REST_DISCOVER_RETRY_S;
     cJSON *tok = cJSON_GetObjectItemCaseSensitive(j, "device_token");
     cJSON *id  = cJSON_GetObjectItemCaseSensitive(j, "device_id");
+    cJSON *registered = cJSON_GetObjectItemCaseSensitive(j, "registered");
+    if (!r.overflow && (cJSON_IsFalse(registered) ||
+        (cJSON_IsString(tok) && tok->valuestring[0]))) s_connection_ok = true;
     if (cJSON_IsString(tok) && tok->valuestring[0]) {
         config_set_device_token(tok->valuestring);
         // Server's canonical device_id wins (it lowercases / may rename).
@@ -267,8 +372,9 @@ static int ensure_paired(const char *server) {
     return retry;
 }
 
-int rest_run_loop(esp_reset_reason_t reset_reason,
+static int rest_wake(esp_reset_reason_t reset_reason,
                   const char *button, uint32_t button_event_id) {
+    s_connection_ok = false;
     char server[160];
     config_get_server_url(server, sizeof(server));
     if (!server[0]) { ESP_LOGE(TAG, "no server URL"); return config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S); }
@@ -309,9 +415,10 @@ int rest_run_loop(esp_reset_reason_t reset_reason,
         cJSON *j = cJSON_Parse(fbuf);
         cJSON *urlj = j ? cJSON_GetObjectItemCaseSensitive(j, "url") : NULL;
         if (cJSON_IsString(urlj) && urlj->valuestring[0]) {
+            if (!fr.overflow) s_connection_ok = true;
             char fullurl[320];
             resolve_url(server, urlj->valuestring, fullurl, sizeof(fullurl));
-            int n = image_fetch(fullurl, framebuf(), EPD_FB_BYTES);
+            int n = http_frame(fullurl);
             if (n == EPD_FB_BYTES) {
                 // Not painted here: main paints after wifi_stop() so the radio
                 // never idles through (or brown-outs) the 13-22 s EPD refresh.
@@ -326,24 +433,30 @@ int rest_run_loop(esp_reset_reason_t reset_reason,
         }
         if (j) cJSON_Delete(j);
     } else if (st == 304) {
+        s_connection_ok = true;
         ESP_LOGI(TAG, "frame unchanged (304); skipping paint");
     } else if (st == 204) {
+        s_connection_ok = true;
         ESP_LOGI(TAG, "no frame rendered yet (204)");
     } else if (st == 401 || st == 403) {
         // 403 too: the server 403s a token bound to a renamed/re-canonicalized
         // device id (reference behaviour) — without the wipe we'd retry forever.
+        // Keep automatic token renewal outside the initial setup check.
+        s_connection_ok = true;
         ESP_LOGW(TAG, "%d; wiping token to re-pair next wake", st);
         config_set_device_token("");
     }
 
     // --- POST /status ---
     uint32_t sleep_s = config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
-    char hb[512];
+    char hb[768];
     // Fallback delivery: only report the button on /status if /frame didn't
     // acknowledge it (auth/network failure before the server dispatched it). The
     // server dedups by button_event_id, so a stray double-send is harmless.
     const char *btn = (button && button[0] && !frame_acked) ? button : NULL;
     heartbeat_json(hb, sizeof(hb), (int)sleep_s, reset_reason, btn, button_event_id);
+    uint32_t report_id = 0;
+    bool report_sent = log_capture_status(hb, sizeof hb, &report_id);
     snprintf(url, sizeof(url), "%s/api/v1/device/%s/status", server, dev_id);
     static char sbuf[REST_RESP_MAX];
     sbuf[0] = '\0';
@@ -351,27 +464,53 @@ int rest_run_loop(esp_reset_reason_t reset_reason,
     int sst = http_do(HTTP_METHOD_POST, url, token, NULL, NULL, hb, &sr);
     ESP_LOGI(TAG, "POST /status -> %d", sst);
 
+    if (report_sent && sst >= 200 && sst < 300) log_capture_ack_report(report_id);
+    bool request_logs = false;
     uint32_t next = sleep_s;
-    if (sst == 200) {
+    if (sst == 200 && !sr.overflow) {
         cJSON *j = cJSON_Parse(sbuf);
-        if (j) {
+        if (cJSON_IsObject(j)) {
+            cJSON *logs = cJSON_GetObjectItemCaseSensitive(j, "logs");
+            request_logs = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(logs, "upload"));
             apply_config_sleep(cJSON_GetObjectItemCaseSensitive(j, "config"));
             cJSON *np = cJSON_GetObjectItemCaseSensitive(j, "next_poll_s");
+            if (cJSON_IsNumber(np) && np->valueint > 0) s_connection_ok = true;
             if (cJSON_IsNumber(np) && np->valueint > 0) next = (uint32_t)np->valueint;
-            cJSON_Delete(j);
+            cJSON *clock = cJSON_GetObjectItemCaseSensitive(j, "server_time");
+            if (cJSON_IsNumber(clock)) wake_align_sync(wake_align_epoch(clock->valuedouble));
+            cJSON *wake = cJSON_GetObjectItemCaseSensitive(j, "wake_at");
+            wake_align_set_target(cJSON_IsNumber(wake) ? wake_align_epoch(wake->valuedouble) : 0);
         }
+        cJSON_Delete(j);
     } else if (sst == 401 || sst == 403) {
         // Same healing as the /frame 401/403: a token revoked between the two
         // calls would otherwise take an extra full sleep cycle to re-pair.
+        s_connection_ok = true;
         ESP_LOGW(TAG, "status %d; wiping token to re-pair next wake", sst);
         config_set_device_token("");
     }
+    if (request_logs) {
+        log_destination_t destination = { server, dev_id, token };
+        log_capture_upload(upload_log, &destination);
+    }
     return (int)next;
+}
+
+int rest_run_loop(esp_reset_reason_t reset_reason,
+                  const char *button, uint32_t button_event_id) {
+    http_end();
+    s_frame_pending = false;
+    s_pending_etag[0] = '\0';
+    int next = rest_wake(reset_reason, button, button_event_id);
+    http_end();
+    return next;
 }
 
 const uint8_t *rest_pending_frame(void) {
     return s_frame_pending ? framebuf() : NULL;
 }
+
+bool rest_connection_ok(void) { return s_connection_ok; }
 
 void rest_frame_painted(void) {
     s_frame_pending = false;

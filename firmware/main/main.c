@@ -5,6 +5,7 @@
 #include "defaults.h"
 #include "board.h"
 #include "power.h"
+#include "wake_align.h"
 #include "epd_driver.h"
 #include "wifi_manager.h"
 #include "ble_setup.h"
@@ -12,18 +13,23 @@
 #include "mqtt_handler.h"
 #include "relay.h"
 #include "provisioning.h"
+#include "setup_check.h"
+#include "connection_retry.h"
 #include "splash.h"
 #include "lowbatt.h"
 #include "manual_core.h"
 #include "maintenance_screen.h"
 #include "framebuf.h"
 #include "led.h"
+#include "log_capture.h"
 
 #include <time.h>
 #include <string.h>
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_random.h"
+#include "button_event.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
 #include "esp_attr.h"   // RTC_NOINIT_ATTR
@@ -35,8 +41,18 @@ static const char *TAG = "picpak";
 // Monotonic id bumped per button-refresh request, retained across deep sleep so
 // the server can dedup one physical press delivered on both /frame and /status.
 // RTC_NOINIT is never initialised by startup, so it is only valid after a
-// deep-sleep wake -> zeroed on every other reset reason in app_main.
+// deep sleep. Other resets start a fresh sequence when the radio is running.
 RTC_NOINIT_ATTR static uint32_t s_button_event_seq;
+RTC_DATA_ATTR static connection_retry_t s_connection_retry;
+RTC_DATA_ATTR static bool s_lowbatt_splash_painted;
+
+static void show_lowbatt_if_needed(bool newly_locked) {
+    if (newly_locked) s_lowbatt_splash_painted = false;
+    if (s_lowbatt_splash_painted || power_battery_mv() < LOWBATT_MIN_PLAUSIBLE_MV) return;
+    s_lowbatt_splash_painted = splash_show_lowbatt() == ESP_OK;
+    if (!s_lowbatt_splash_painted)
+        ESP_LOGW(TAG, "charge screen pending, retry on a later battery check");
+}
 
 // Authorship, baked into the binary's .rodata (find it with
 // `strings picpak-tesserae-client.bin | grep varanu5`) and printed once per
@@ -54,6 +70,7 @@ static bool is_power_fault_reset(esp_reset_reason_t r) {
 
 void app_main(void) {
     esp_reset_reason_t reason = esp_reset_reason();
+    log_capture_init();
     ESP_LOGI(TAG, "%s", k_credit);
     ESP_LOGI(TAG, "PicPak custom fw %s boot (panel %dx%d, wake=%d)",
              FW_VERSION, EPD_W, EPD_H, (int)reason);
@@ -67,14 +84,11 @@ void app_main(void) {
     led_init();
     led_ack();
 
-    // RTC_NOINIT survives deep sleep but holds garbage after any other start — a
-    // true power-up, an esptool/USB reset (how `idf.py flash` and the web flasher
-    // end), an esp_restart() from provisioning, or a brownout-adjacent ESP_RST_UNKNOWN.
-    // Only a deep-sleep wake is a real continuation of the previous session, so zero
-    // the counter on everything else. (ESP_RST_POWERON alone missed the USB/SW cases
-    // and could start the seq from a random value that collides with a server-recorded
-    // id, silently dropping one button press.)
+    // A new event sequence starts after WiFi enables the hardware entropy source.
     if (reason != ESP_RST_DEEPSLEEP) s_button_event_seq = 0;
+    connection_retry_begin(&s_connection_retry, reason == ESP_RST_DEEPSLEEP);
+    wake_align_begin(reason == ESP_RST_DEEPSLEEP,
+                     esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER);
 
     // Provisioning: a 20s button-hold at wake, or no usable WiFi SSID, enters the
     // captive portal. A 5-10s hold is a refresh gesture and a 10-20s hold opens
@@ -89,10 +103,11 @@ void app_main(void) {
         power_measure_battery();
         if (is_power_fault_reset(reason) ||
             lowbatt_gate(power_battery_mv(), false) != LOWBATT_NORMAL) {
-            splash_show_lowbatt();
+            show_lowbatt_if_needed(false);
             if (config_screen_is_bluetooth()) power_sleep_until_button();
             power_deep_sleep(lowbatt_wake_s());
         }
+        s_lowbatt_splash_painted = false;
         ble_setup_run(BLE_MAINTENANCE_TIMEOUT_S);
         // Start the normal network cycle with clean Wi-Fi/BLE task ownership.
         // Clear Wi-Fi requests persist a one-shot BLE recovery flag; timeout
@@ -115,19 +130,22 @@ void app_main(void) {
         bool user_wake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_GPIO ||
                          gesture == BTN_GESTURE_TAP || gesture == BTN_GESTURE_REFRESH;
         power_measure_battery();
-        bool was_locked = lowbatt_locked();               // read before the gate mutates state
+        bool was_locked = lowbatt_locked() || config_lowbatt_screen_pending();
         lowbatt_action_t gate = lowbatt_gate(power_battery_mv(), false);
         manual_decision_t act = manual_decide(user_wake, gate, was_locked);
 
-        if (act.paint == MANUAL_PAINT_LOWBATT) {
+        if (gate == LOWBATT_NORMAL) s_lowbatt_splash_painted = false;
+        if (act.paint == MANUAL_PAINT_LOWBATT || gate == LOWBATT_STAY_LOW) {
             ESP_LOGW(TAG, "manual mode: battery low -> charge splash + %lu s poll",
                      (unsigned long)lowbatt_wake_s());
-            splash_show_lowbatt();
+            show_lowbatt_if_needed(gate == LOWBATT_ARM);
         } else if (act.paint == MANUAL_PAINT_READY) {
             ESP_LOGI(TAG, "manual mode: battery recovered -> ready screen");
             maintenance_screen_photo_ready(framebuf());
-            if (epd_present(framebuf()) != ESP_OK)
-                ESP_LOGW(TAG, "ready screen failed");
+            if (config_set_lowbatt_screen(true) != ESP_OK || epd_present(framebuf()) != ESP_OK)
+                ESP_LOGW(TAG, "ready screen pending, retry on a later wake");
+            else
+                config_set_lowbatt_screen(false);
         }
         if (act.run_photo) ble_photo_run(90);
         // Diagnostic summary, printed after the session so it survives the USB-Serial-JTAG
@@ -150,11 +168,12 @@ void app_main(void) {
     // device is never in the locked state (RTC lock clears on cold boot).
     if (want_provision && gesture == BTN_GESTURE_PROVISION && lowbatt_locked()) {
         ESP_LOGW(TAG, "provision gesture ignored: battery locked, charge first");
-        splash_show_lowbatt();
+        show_lowbatt_if_needed(false);
         if (config_screen_is_bluetooth()) power_sleep_until_button();
         power_deep_sleep(lowbatt_wake_s());            // no return
     }
     if (want_provision) {
+        config_clear_frame_ref();
         splash_show_setup();                           // panel shows AP name/password while you provision
         if (provisioning_run_blocking(NULL) == ESP_OK) {
             ESP_ERROR_CHECK(config_save_screen_mode(false, NULL));
@@ -176,8 +195,8 @@ void app_main(void) {
     // Low-battery gate. Measure now: the button (shared with the battery ADC on GPIO2) has been
     // released by power_boot_gesture, so GPIO2 reads the cell cleanly — and it's still before
     // WiFi/EPD load the rail. At 0% (3400 mV, bottom of the battpct.h curve) -> charge screen
-    // + a daily low-power poll until the voltage recovers (charging). A button-wake resumes
-    // NORMAL so the device is always recoverable — and is the fast way back after plugging in.
+    // + a daily battery check until voltage recovers. A tap rechecks the battery.
+    // Only a deliberate refresh hold overrides the lock in Automatic mode.
     power_measure_battery();
     bool force_resume = want_refresh;              // a 5 s hold is the deliberate override when locked
     bool was_locked   = lowbatt_locked();          // read before the gate mutates RTC state
@@ -185,10 +204,11 @@ void app_main(void) {
         case LOWBATT_ARM:
             ESP_LOGW(TAG, "battery low: charge screen + %lu s low-power poll",
                      (unsigned long)lowbatt_wake_s());
-            splash_show_lowbatt();
+            show_lowbatt_if_needed(true);
             power_deep_sleep(lowbatt_wake_s());     // no return
             break;
         case LOWBATT_STAY_LOW:
+            show_lowbatt_if_needed(false);
             ESP_LOGW(TAG, "battery still low: %lu s low-power poll", (unsigned long)lowbatt_wake_s());
             power_deep_sleep(lowbatt_wake_s());     // no return
             break;
@@ -196,13 +216,9 @@ void app_main(void) {
         default:
             break;   // healthy / recovered / override -> normal cycle
     }
-    // Just recovered from the locked state via an automatic route (a tap that charged, or the daily
-    // poll) — not a 5 s hold. The charge splash was painted outside the ETag machinery, so a plain
-    // re-fetch could return 304 (or an unchanged MQTT frame URL, or a relay 304) and skip the paint,
-    // stranding the splash on every transport. Clear the frame ref for ALL transports to force a full
-    // repaint of the live photo. A 5 s hold (want_refresh) is left alone: its refresh path already
-    // drops If-None-Match and pulls fresh content — identical to the good-battery gesture.
-    if (was_locked && !want_refresh) config_clear_frame_ref();
+    // The charge screen replaced the remembered photo on every transport.
+    s_lowbatt_splash_painted = false;
+    if (was_locked || config_lowbatt_screen_pending()) config_clear_frame_ref();
 
     // One-shot after provisioning: paint the "waiting for first frame" splash and
     // clear the frame ref so the first poll repaints the real photo over the splash.
@@ -227,8 +243,9 @@ void app_main(void) {
     // wins and the REST/MQTT dispatch below is skipped entirely (same "one
     // transport" rule as the reference — a relay panel has no home server).
     bool use_relay = config_relay_configured();
-    int next = SLEEP_INTERVAL_DEFAULT_S;
+    int next = (int)config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
     bool wifi_ok = false;
+    bool transport_ok = false;
     vTaskDelay(pdMS_TO_TICKS(WIFI_SETTLE_MS));   // let the rail settle before the radio
     if (wifi_start_sta() == ESP_OK) {
         wifi_ok = true;
@@ -253,15 +270,11 @@ void app_main(void) {
             const char *btn = want_refresh ? "refresh"
                             : (want_next && BTN_TAP_BUTTON[0]) ? BTN_TAP_BUTTON
                             : NULL;
-            uint32_t button_ev = btn ? ++s_button_event_seq : 0;
+            uint32_t button_ev = btn ? button_event_next(&s_button_event_seq, esp_random()) : 0;
             if (relay_ready()) {
                 next = relay_run_loop(btn, button_ev);
-                // Post-button window: home learns of the press on its next relay poll
-                // (~30 s) then renders a response. Stay awake and keep polling the
-                // mailbox until it arrives, so the press feels responsive. Only when
-                // nothing was already staged this wake; break on the first NEW frame
-                // (painted after wifi_stop, radio off). No new-press chaining.
-                if (btn && relay_pending_frame() == NULL && !relay_pairing_revoked()) {
+                // Wait for the response even when the initial fetch staged a frame.
+                if (btn && !relay_pairing_revoked()) {
                     ESP_LOGI(TAG, "relay button window: up to %d s awake, polling",
                              RELAY_BUTTON_WINDOW_S);
                     int64_t deadline = esp_timer_get_time() +
@@ -275,6 +288,8 @@ void app_main(void) {
             } else {
                 next = config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
             }
+            transport_ok = relay_connection_ok();
+            relay_end_wake();
         } else if (transport == 0) {
             // MQTT has no server_time, so it is the one path that needs a real
             // clock source (mqtts:// cert validity). Sync only when the clock
@@ -286,6 +301,7 @@ void app_main(void) {
             if (want_refresh || want_next)
                 ESP_LOGW(TAG, "button gesture ignored: not supported on MQTT transport");
             next = mqtt_run_loop(reason);
+            transport_ok = mqtt_connection_ok();
         } else {
             // https cert validation needs a plausible wall clock too (validity
             // window check) — same sanity pattern as mqtts. Plain http skips it.
@@ -299,8 +315,9 @@ void app_main(void) {
             const char *btn = want_refresh ? "refresh"
                             : (want_next && BTN_TAP_BUTTON[0]) ? BTN_TAP_BUTTON
                             : NULL;
-            uint32_t button_ev = btn ? ++s_button_event_seq : 0;
+            uint32_t button_ev = btn ? button_event_next(&s_button_event_seq, esp_random()) : 0;
             next = rest_run_loop(reason, btn, button_ev);
+            transport_ok = rest_connection_ok();
         }
     } else {
         ESP_LOGW(TAG, "WiFi failed; keeping last image, retry next wake");
@@ -318,40 +335,36 @@ void app_main(void) {
         power_deep_sleep((uint32_t)next);   // no return
     }
 
-    // One-shot after provisioning (any transport): WiFi itself failed with a
-    // recognisable misconfiguration signature — reopen the portal with the
-    // matching banner while the user is still nearby (docs item 1). Wrong
-    // password and no-such-network get distinct messages so the user fixes the
-    // right field. Anything else (transient outage) keeps the silent retry
-    // loop, so a provisioned device never drops to AP mode on a router blip.
-    if (just_provisioned && !wifi_ok) {
-        const char *note = NULL;
-        if (wifi_fail_looks_like_bad_password()) {
+    // The setup flag was consumed before connecting. Later outages only retry.
+    if (setup_should_reopen(just_provisioned, wifi_ok, transport_ok)) {
+        const char *note;
+        if (!wifi_ok && wifi_fail_looks_like_bad_password()) {
             note = "Couldn&rsquo;t join the WiFi network &mdash; the password "
                    "looks wrong. Please re-enter it.";
-        } else if (wifi_fail_looks_like_no_ap()) {
+        } else if (!wifi_ok && wifi_fail_looks_like_no_ap()) {
             note = "Couldn&rsquo;t find the WiFi network &mdash; check the "
                    "network name. If the network has no password, leave the "
                    "password field blank.";
+        } else if (!wifi_ok) {
+            note = "Could not connect to WiFi. Check the network name and password, "
+                   "and make sure the access point is available.";
+        } else if (use_relay) {
+            note = "WiFi connected, but the relay connection or pairing could not be confirmed. "
+                   "Check the relay URL and pairing code, or try again when the relay is available.";
+        } else if (transport == 0) {
+            note = "WiFi connected, but the MQTT broker did not accept a connection. "
+                   "Check the broker address, username and password, and make sure it is available.";
+        } else {
+            note = "WiFi connected, but the Tesserae connection could not be confirmed. "
+                   "Check the server URL and pairing details, and make sure the server is available.";
         }
-        if (note) {
-            ESP_LOGW(TAG, "just provisioned and WiFi failed with a config signature; reopening portal");
-            splash_show_setup();
-            if (provisioning_run_blocking(note) == ESP_OK) {
-                esp_restart();                          // saved -> retry with new settings
-            }
-            power_deep_sleep(SLEEP_INTERVAL_DEFAULT_S); // timeout: normal cycle next wake
+        ESP_LOGW(TAG, "initial setup connection failed, reopening portal");
+        splash_show_setup();
+        if (provisioning_run_blocking(note) == ESP_OK) {
+            esp_restart();
         }
+        power_deep_sleep(SLEEP_INTERVAL_DEFAULT_S);
     }
-
-    // Deliberately NO banner when WiFi is fine but the server/broker is
-    // unreachable (removed 2026-07-19, docs item 14): the backend being down at
-    // the exact first boot is usually the user's own doing (restarting the
-    // Tesserae docker container mid-setup) — bouncing a correctly configured
-    // frame back into the portal for that is a false alarm. The frame keeps
-    // retrying on its own (30 s discover cadence while unpaired, heartbeat
-    // every wake once paired) and catches up when the backend returns; a
-    // genuinely wrong URL is recovered via the 20 s button-hold portal.
 
     // Transport-agnostic contract: all network I/O finishes (incl. a graceful
     // MQTT stop — no LWT), then radio off, then paint. Radio + EPD refresh
@@ -366,6 +379,7 @@ void app_main(void) {
         ESP_LOGI(TAG, "painting new frame (radio off)");
         esp_err_t err = epd_present(fb);
         if (err == ESP_OK) {
+            config_set_lowbatt_screen(false);
             // Commit only after refresh and panel shutdown have both succeeded.
             if (use_relay)           relay_frame_painted();
             else if (transport == 0) mqtt_frame_painted();
@@ -375,5 +389,19 @@ void app_main(void) {
                      esp_err_to_name(err));
         }
     }
-    power_deep_sleep((uint32_t)next);   // no return
+    bool connected = wifi_ok && transport_ok;
+    uint8_t previous_failures = s_connection_retry.failures;
+    uint32_t sleep_s = connection_retry_sleep(&s_connection_retry, connected,
+        (uint32_t)next, config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S));
+    if (!connected) {
+        ESP_LOGW(TAG, "%s unavailable, failed wakes %u%s, retry in %lu s",
+                 !wifi_ok ? "WiFi" : use_relay ? "relay" : transport == 0 ? "MQTT" : "REST",
+                 (unsigned)s_connection_retry.failures,
+                 s_connection_retry.failures == CONNECTION_FAILURE_LIMIT ? " or more" : "",
+                 (unsigned long)sleep_s);
+        power_deep_sleep(sleep_s);   // no return
+    }
+    if (previous_failures)
+        ESP_LOGI(TAG, "connection restored, normal wake schedule resumed");
+    power_scheduled_sleep(sleep_s);   // no return
 }

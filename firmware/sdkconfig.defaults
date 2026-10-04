@@ -5,7 +5,11 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Prepare the bootloader for future OTA rollback. Updates are not enabled yet.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+# Optimise cryptographic work without increasing the CPU clock.
+CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # GPIO21 is the on-board status LED AND the UART0 TX pin. Route the console to
 # the native USB-Serial-JTAG only (where logs are already read — the
 # /dev/cu.usbmodem* port), so UART0 no longer drives GPIO21 and the LED blinks

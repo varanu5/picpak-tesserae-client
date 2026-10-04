@@ -4,6 +4,7 @@
 #include <string.h>
 #include "nvs.h"
 #include "config_store.h"
+#include "setup_check.h"
 
 typedef struct { unsigned ns; char key[16]; uint8_t data[512]; size_t len; } entry_t;
 static entry_t entries[64];
@@ -55,6 +56,54 @@ esp_err_t nvs_set_u8(nvs_handle_t h, const char *k, uint8_t v) { return nvs_set_
 esp_err_t nvs_get_u8(nvs_handle_t h, const char *k, uint8_t *v) { size_t n = sizeof *v; return nvs_get_blob(h, k, v, &n); }
 esp_err_t nvs_set_u32(nvs_handle_t h, const char *k, uint32_t v) { return nvs_set_blob(h, k, &v, sizeof v); }
 esp_err_t nvs_get_u32(nvs_handle_t h, const char *k, uint32_t *v) { size_t n = sizeof *v; return nvs_get_blob(h, k, v, &n); }
+
+static void test_initial_connection_recovery(void) {
+    for (unsigned transport = 0; transport < 3; transport++) {
+        config_clear_relay();
+        config_set_transport(transport == 0 ? 0 : 1);
+        if (transport == 2) {
+            config_set_relay_url("https://relay.test");
+            config_set_relay_code("test-code");
+        }
+        config_set_wifi("setup-network", "setup-password");
+        config_set_server_url("http://server.test");
+        config_set_device_token("saved-token");
+
+        // An update with saved settings does not arm setup recovery.
+        assert(config_init() == ESP_OK);
+        assert(!setup_should_reopen(config_take_paired_pending(), false, false));
+
+        // Any initial WiFi failure reopens setup, including generic reason 205.
+        config_set_paired_pending(true);
+        assert(config_init() == ESP_OK);
+        assert(setup_should_reopen(config_take_paired_pending(), false, false));
+        for (unsigned wake = 0; wake < 4; wake++) {
+            assert(config_init() == ESP_OK);
+            assert(!setup_should_reopen(config_take_paired_pending(), false, false));
+        }
+
+        // Saving again arms exactly one check of the selected service.
+        config_set_paired_pending(true);
+        assert(setup_should_reopen(config_take_paired_pending(), true, false));
+        assert(!setup_should_reopen(config_take_paired_pending(), true, false));
+
+        // A confirmed connection needs no image or completed claim to pass.
+        config_set_paired_pending(true);
+        assert(!setup_should_reopen(config_take_paired_pending(), true, true));
+        assert(config_init() == ESP_OK);
+        assert(!setup_should_reopen(config_take_paired_pending(), true, false));
+        assert(!setup_should_reopen(config_take_paired_pending(), false, false));
+
+        char ssid[33], pass[65], url[128], token[64];
+        assert(config_get_wifi(ssid, sizeof ssid, pass, sizeof pass));
+        assert(!strcmp(ssid, "setup-network") && !strcmp(pass, "setup-password"));
+        config_get_server_url(url, sizeof url);
+        assert(!strcmp(url, "http://server.test"));
+        config_get_device_token(token, sizeof token);
+        assert(!strcmp(token, "saved-token"));
+        assert(config_relay_configured() == (transport == 2));
+    }
+}
 
 int main(void) {
     char ssid[33], pass[65], url[128], token[64];
@@ -114,6 +163,43 @@ int main(void) {
     assert(!config_get_wifi(ssid, sizeof ssid, pass, sizeof pass));
     config_get_device_token(token, sizeof token); assert(!token[0]);
     assert(config_get_waveform(2) == 2);
+    config_set_wifi("secured", "original-password");
+    config_set_wifi("secured", NULL);
+    assert(config_get_wifi(ssid, sizeof ssid, pass, sizeof pass) && !strcmp(pass, "original-password"));
+    config_set_wifi("open", NULL);
+    assert(config_get_wifi(ssid, sizeof ssid, pass, sizeof pass) && !strcmp(ssid, "open") && !pass[0]);
+    config_set_wifi("another-open", "");
+    assert(config_get_wifi(ssid, sizeof ssid, pass, sizeof pass) && !pass[0]);
+    uint8_t pairing_key[32]; memset(pairing_key, 7, sizeof pairing_key);
+    fail_commit=1;
+    assert(config_set_relay_priv(pairing_key)==ESP_FAIL);
+    fail_commit=0;
+    assert(config_set_relay_priv(pairing_key)==ESP_OK);
+    assert(config_get_relay_priv(read_key) && !memcmp(pairing_key, read_key, sizeof read_key));
+    assert(!config_lowbatt_screen_pending());
+    unsigned before = commits;
+    assert(config_set_lowbatt_screen(false) == ESP_OK && commits == before);
+    config_set_etag("frame-a");
+    config_set_frame_url("http://frame.test/a");
+    config_set_relay_etag("frame-b");
+    config_set_device_token("preserved-token");
+    assert(config_set_lowbatt_screen(true) == ESP_OK);
+    before = commits;
+    assert(config_set_lowbatt_screen(true) == ESP_OK && commits == before);
+    assert(config_init() == ESP_OK && config_lowbatt_screen_pending());
+    config_clear_frame_ref();
+    config_get_etag(url, sizeof url); assert(!url[0]);
+    config_get_frame_url(url, sizeof url); assert(!url[0]);
+    config_get_relay_etag(url, sizeof url); assert(!url[0]);
+    config_get_device_token(token, sizeof token); assert(!strcmp(token, "preserved-token"));
+    assert(config_set_lowbatt_screen(false) == ESP_OK && !config_lowbatt_screen_pending());
+    fail_commit = 1;
+    assert(config_set_lowbatt_screen(true) == ESP_FAIL);
+    fail_commit = 0;
+    assert(config_set_lowbatt_screen(false) == ESP_OK);
+    puts("battery screen store: persistence, unchanged writes and frame reference clearing passed");
+    test_initial_connection_recovery();
+    puts("setup recovery: initial failures, later outages and saved settings passed");
     puts("maintenance store: persistence failures, resets and server preservation passed");
     return 0;
 }

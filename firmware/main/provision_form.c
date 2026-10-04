@@ -54,24 +54,40 @@ void provform_url_decode(char *s) {
 }
 
 // Pull a named field out of x-www-form-urlencoded body into dst (decoded).
-bool provform_field(const char *body, const char *key, char *dst, size_t dst_sz) {
+provform_field_result_t provform_parse_field(const char *body, const char *key,
+                                             char *dst, size_t dst_sz) {
+    if (!dst || !dst_sz) return PROVFORM_FIELD_INVALID;
+    dst[0] = '\0';
     size_t klen = strlen(key);
-    const char *p = body;
-    while (p && *p) {
-        if (strncmp(p, key, klen) == 0 && p[klen] == '=') {
-            const char *v = p + klen + 1;
-            const char *end = strchr(v, '&');
-            size_t len = end ? (size_t)(end - v) : strlen(v);
-            if (len >= dst_sz) len = dst_sz - 1;
-            memcpy(dst, v, len);
-            dst[len] = '\0';
-            provform_url_decode(dst);
-            return true;
+    for (const char *p = body; p && *p;) {
+        const char *end = strchr(p, '&');
+        if (!end) end = p + strlen(p);
+        if ((size_t)(end - p) > klen && !strncmp(p, key, klen) && p[klen] == '=') {
+            size_t used = 0;
+            for (const char *v = p + klen + 1; v < end; v++) {
+                unsigned char c = (unsigned char)*v;
+                if (c == '+') c = ' ';
+                else if (c == '%') {
+                    if (end - v < 3 || hexval(v[1]) < 0 || hexval(v[2]) < 0) goto invalid;
+                    c = (unsigned char)((hexval(v[1]) << 4) | hexval(v[2]));
+                    v += 2;
+                }
+                if (!c || used + 1 >= dst_sz) goto invalid;
+                dst[used++] = (char)c;
+            }
+            dst[used] = '\0';
+            return PROVFORM_FIELD_OK;
         }
-        p = strchr(p, '&');
-        if (p) p++;
+        p = *end ? end + 1 : NULL;
     }
-    return false;
+    return PROVFORM_FIELD_MISSING;
+invalid:
+    dst[0] = '\0';
+    return PROVFORM_FIELD_INVALID;
+}
+
+bool provform_field(const char *body, const char *key, char *dst, size_t dst_sz) {
+    return provform_parse_field(body, key, dst, dst_sz) == PROVFORM_FIELD_OK;
 }
 
 // Validate device id: ^[a-z][a-z0-9_-]{1,31}$ (matches the form's HTML pattern

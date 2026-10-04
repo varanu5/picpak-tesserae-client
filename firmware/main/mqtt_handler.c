@@ -23,6 +23,7 @@
 #include "esp_crt_bundle.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "freertos/portmacro.h"
 #include "mqtt_client.h"
 
 static const char *TAG = "mqtt";
@@ -40,6 +41,7 @@ static char s_topic_frame[96];
 static char s_topic_config[96];
 static char s_topic_status[96];
 
+static portMUX_TYPE s_url_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_url[256];          // retained frame URL captured by the event handler
 static bool s_frame_pending;     // framebuf() holds a validated new frame
 static char s_pending_url[256];  // its URL; persisted only after a successful paint
@@ -76,8 +78,12 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
         if (topic_eq(s_topic_config, e->topic, e->topic_len)) {
             apply_config_payload(e->data, e->data_len);
         } else if (topic_eq(s_topic_frame, e->topic, e->topic_len)) {
-            if (mqtt_extract_url(e->data, (size_t)e->data_len, s_url, sizeof s_url)) {
-                ESP_LOGI(TAG, "frame url: %s", s_url);
+            char received[sizeof s_url];
+            if (mqtt_extract_url(e->data, (size_t)e->data_len, received, sizeof received)) {
+                portENTER_CRITICAL(&s_url_lock);
+                strlcpy(s_url, received, sizeof s_url);
+                portEXIT_CRITICAL(&s_url_lock);
+                ESP_LOGI(TAG, "frame url: %s", received);
                 xEventGroupSetBits(s_events, BIT_GOT_URL);
             } else {
                 ESP_LOGW(TAG, "frame payload had no usable url");
@@ -97,6 +103,8 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data) {
 }
 
 int mqtt_run_loop(esp_reset_reason_t reset_reason) {
+    s_connected = false;
+    s_frame_pending = false;
     int fallback = (int)config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
 
     char uri[160], user[64], pass[64];
@@ -119,7 +127,6 @@ int mqtt_run_loop(esp_reset_reason_t reset_reason) {
 
     s_events = xEventGroupCreate();
     if (!s_events) return fallback;
-    s_connected = false;
     s_pub_msg_id = -1;
     s_url[0] = '\0';
 
@@ -193,17 +200,21 @@ int mqtt_run_loop(esp_reset_reason_t reset_reason) {
     }
 
     if (bits & BIT_GOT_URL) {
+        char requested[sizeof s_url];
+        portENTER_CRITICAL(&s_url_lock);
+        strlcpy(requested, s_url, sizeof requested);
+        portEXIT_CRITICAL(&s_url_lock);
         char last[256] = {0};
         config_get_frame_url(last, sizeof last);
-        if (strcmp(last, s_url) == 0) {
+        if (strcmp(last, requested) == 0) {
             ESP_LOGI(TAG, "frame url unchanged; skipping download");
         } else {
-            int n = image_fetch(s_url, framebuf(), EPD_FB_BYTES);
+            int n = image_fetch(requested, framebuf(), EPD_FB_BYTES);
             if (n == EPD_FB_BYTES) {
                 // Not painted here: main paints after wifi_stop() so the radio
                 // never idles through (or brown-outs) the 13-22 s EPD refresh.
                 s_frame_pending = true;
-                strlcpy(s_pending_url, s_url, sizeof s_pending_url);
+                strlcpy(s_pending_url, requested, sizeof s_pending_url);
                 ESP_LOGI(TAG, "new frame buffered; painting after radio-off");
             } else {
                 ESP_LOGE(TAG, "frame size %d != %d; refusing to paint", n, EPD_FB_BYTES);
@@ -244,6 +255,8 @@ int mqtt_run_loop(esp_reset_reason_t reset_reason) {
 const uint8_t *mqtt_pending_frame(void) {
     return s_frame_pending ? framebuf() : NULL;
 }
+
+bool mqtt_connection_ok(void) { return s_connected; }
 
 void mqtt_frame_painted(void) {
     s_frame_pending = false;

@@ -4,7 +4,7 @@
 //
 // One decision per wake. Below ARM (after a short debounce streak) the device locks into a
 // low-power poll; while locked it stays low until the cell recovers — either absolutely
-// (>= CLEAR) or by climbing RISE mV above its lowest-seen baseline (a rising cell means a
+// (>= CLEAR) or by climbing RISE mV above its stored baseline (a rising cell means a
 // charger is attached; the C3 has no VBUS line to sense that directly). A force-resume (a
 // deliberate 5 s button hold) or a USB wake unlocks immediately; a plain tap is treated as an
 // ordinary evaluation wake. State is caller-owned (kept in RTC-RAM), so this
@@ -14,7 +14,7 @@
 #include <stdbool.h>
 
 // Readings below this are implausible for a Li-Po (no cell, button shorting the shared ADC
-// pin, or an ADC-failure sentinel like -1/0) — never gate on them.
+// pin, or an ADC failure sentinel like -1/0). Keep an existing lock on these reads.
 #define LOWBATT_MIN_PLAUSIBLE_MV 2500
 
 typedef struct {
@@ -64,7 +64,10 @@ static inline lowbatt_result_t lowbatt_decide(int batt_mv, bool force_resume, bo
         return r;
     }
 
-    if (batt_mv < LOWBATT_MIN_PLAUSIBLE_MV) return r;   // implausible reading -> don't act on it
+    if (batt_mv < LOWBATT_MIN_PLAUSIBLE_MV) {
+        if (st.lock) r.action = LOWBATT_STAY_LOW;
+        return r;
+    }
 
     if (st.lock) {                                // in the low-power poll: look for recovery
         bool rose = (st.last_mv >= 0) && (batt_mv - (int)st.last_mv >= (int)cfg.rise_mv);

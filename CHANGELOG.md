@@ -1,5 +1,96 @@
 # Changelog
 
+## 0.9.10
+
+### Added
+
+-  Connection failure recovery across WiFi, REST, MQTT and cloud relay. After three
+   consecutive failed wakes, retries sleep for at least 15 minutes while preserving
+   longer saved intervals. A successful connection resumes normal scheduling and
+   button wake remains available. The failure counter uses retained RAM rather than flash.
+-  Device log collection over REST, supporting HTTP and HTTPS. A 3 KiB retained RAM
+   buffer keeps recent messages across wakes without writing logs to flash. Tesserae
+   can request uploads during normal device check-ins.
+-  REST reports for display failures, panics, watchdog resets and brownouts. Pending
+   reports survive sleep and are cleared after a successful status request. Log upload
+   failures preserve pairing and the normal sleep schedule.
+
+### Fixed
+
+-  Kept an existing low battery lock active when the battery reading fails.
+-  Remembered the charge screen across restarts so recovery restores the picture on
+   REST, MQTT and cloud relay, or the ready screen in Bluetooth mode.
+-  Retried failed charge and Bluetooth ready screen updates on later wakes without
+   repeated display attempts during the same wake.
+
+-  Restricted REST and relay API redirects to the original scheme, host and port.
+-  Kept MQTT frame identity stable when another message arrives during a download.
+-  Opened the relay button polling window even after an initial frame download, while
+   retaining that frame if later polls fail or no navigation response arrives.
+-  Reused the saved relay pairing key after interrupted submissions and checked for
+   completed pairing before retrying.
+-  Decoded setup fields before applying their size limits and rejected malformed or
+   oversized values instead of silently truncating credentials.
+-  Preserved full length WiFi SSIDs and hexadecimal keys. Switching to another open
+   network now clears the previous password.
+-  Restored server images after setup timeouts and deliberate low battery recovery,
+   including when the server image or MQTT URL has not changed.
+-  Started button event sequences from fresh radio entropy after a restart to avoid
+   repeatedly reusing event 1.
+-  Rejected incomplete MQTT image responses and overflowing numeric settings.
+
+-  Limited setup portal browser connections so stale sessions can be recycled
+   before the shared socket pool fills when a phone reconnects or reopens setup.
+
+### Changed
+
+-  Setup WiFi names now include the last four characters of the device MAC address,
+   for example `Tesserae-Setup-27CC`. The setup screen shows the matching name so
+   nearby frames can be identified during provisioning. The password remains `tesserae`.
+-  Added a WiFi join QR code to the setup screen, using each frame’s setup network
+   name and password. Manual connection details remain visible alongside it.
+-  Setup now uses a white background across the whole screen, with more space
+   between the QR code and the screen edge. Removed the square beside the setup
+   screen’s Tesserae wordmark and aligned it with the text below.
+-  Enabled performance optimisation for application builds to reduce processing
+   overhead during HTTPS connections. CPU frequency remains 80 MHz.
+-  REST requests can reuse one connection during a wake when the server permits it.
+   Frame downloads clear API credentials and request headers before using the connection.
+   Connections close before painting or sleeping.
+-  Cloud relay requests can also reuse a connection through the wake and button
+   polling window. Polling timings and encrypted frame authentication are unchanged.
+
+## 0.9.9
+
+### Changed
+
+-  Replaced the 2 MiB factory application with two 4 MiB application slots.
+   Reserved 7.8125 MiB for future photo storage and 64 KiB for diagnostics.
+   OTA downloads and offline photo storage are not enabled by this change.
+-  Prepared the bootloader for future OTA rollback. USB installation starts in slot A.
+   Future OTA support must confirm a new image after its boot checks pass.
+-  Layout migration requires the matching bootloader, partition table, application
+   and initial OTA selection data. Updating preserves the existing NVS partition
+   with WiFi credentials, transport settings and pairing. Fresh installation clears NVS.
+
+
+## 0.9.8
+
+### Fixed
+
+- Setup now reopens once after saving if WiFi or the selected REST, MQTT or cloud relay
+   connection cannot be confirmed. Generic WiFi failures are included. Later outages
+   keep saved settings and use the normal sleep and retry cycle. REST token renewal
+   and the cloud relay revocation check do not trigger this setup check.
+
+### Added
+
+- REST absolute wake targets. The sleep timer accounts for painting and button release
+   before sleeping, with the existing relative interval as the fallback.
+- REST clock drift correction learned from server time after normal timer wakes.
+   Calibration survives deep sleep, resets after a restart and requires no extra network
+   requests or flash writes. Other transports and recovery sleeps are unchanged.
+
 ## 0.9.7
 
 ### Fixed

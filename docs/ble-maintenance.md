@@ -8,17 +8,16 @@ the bitmap font is public domain.
 
 ## Entering maintenance
 
-While the display is sleeping, press and hold its wake button. At about five
-seconds the LED lights steady (refresh armed); at about ten seconds it pulses:
-release between ten and twenty seconds for Bluetooth maintenance. Release before
-five seconds for a deck-next tap, between five and ten seconds for the existing
-refresh action, or keep holding to twenty seconds for AP setup. The gesture is
-classified on release, so a shorter action never opens BLE on its way through ten
-seconds, and an over-held refresh cannot fall into a BLE session. Maintenance
-deliberately sits above refresh so the short tap keeps a wide, forgiving window.
-This first implementation recognizes gestures at boot/wake; it does not interrupt
-a running screen refresh or captive portal. A fresh device still uses the AP for
-initial server setup.
+In Automatic mode, press and hold the wake button while the display is sleeping.
+At about five seconds the LED lights steady for refresh. At about ten seconds it
+pulses. Release between ten and twenty seconds for Bluetooth maintenance.
+A press still held when the boot gesture check runs and released before five
+seconds requests the next page. A tap released before that check only wakes the
+device. Release between five and ten seconds for refresh, or keep holding to
+twenty seconds for AP setup. Shorter actions are selected on release.
+Gestures are read at boot or wake and do not interrupt a running refresh or portal.
+A fresh device uses the AP for initial server setup. Manual mode has different
+short-press actions, described under [Screen mode](#screen-mode).
 
 The display paints a QR code and passkey before advertising. Open Bluetooth
 Maintenance in Companion, select the nearby PicPak, then scan the QR code or use
@@ -112,14 +111,10 @@ nonempty values are rejected. Changing servers remains in AP setup.
 
 ## Building and checking
 
-The existing 16 MiB flash layout and 2 MiB application slot are retained. No OTA
-migration, bootloader change, or partition-table replacement is required.
-
-With PlatformIO installed, run `tools/build_firmware.sh`. It builds a disposable
-copy under `/tmp` because ESP-IDF rejects paths containing spaces. Override `PIO`
-or `PICPAK_BUILD_DIR` as needed. The script prints the application-only binary path
-and checks that it fits the original slot. A normal ESP-IDF build from `firmware/`
-is also supported with its `sdkconfig.defaults` and existing partition table.
+Firmware 0.9.9 and later use two 4 MiB application slots within the lower 16 MiB of flash.
+Migrating from an older layout requires the complete release package, including its bootloader
+and partition table. An application-only flash at the old address is not supported.
+See the [installation instructions](../README.md#step-2-flash-the-release-build).
 
 Run `tools/test_host.sh` for gesture boundaries, settings persistence/error paths,
 protocol golden vectors, QR framebuffer bounds, and existing pure firmware tests.

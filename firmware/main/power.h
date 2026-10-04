@@ -21,3 +21,4 @@ btn_gesture_t power_boot_gesture(void);
 
 void power_sleep_until_button(void);
 void power_deep_sleep(uint32_t seconds);   // timer + button wake, then sleep (no return)
+void power_scheduled_sleep(uint32_t seconds);

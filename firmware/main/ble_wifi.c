@@ -1,6 +1,7 @@
 // Never saves candidate Wi-Fi credentials or touches the server registration.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 #include "ble_wifi.h"
+#include "wifi_credentials.h"
 #include "defaults.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -124,12 +125,10 @@ esp_err_t ble_wifi_connect(const char *ssid, const char *password,
     s_started = false;
     if (!(wait_bits(STOPPED, 2000, cancelled) & STOPPED)) return ESP_ERR_TIMEOUT;
     wifi_config_t cfg = {0};
-    size_t ssid_len = strlen(ssid), pass_len = strlen(password);
-    if (!ssid_len || ssid_len > sizeof cfg.sta.ssid || pass_len > sizeof cfg.sta.password)
+    if (!wifi_credentials_copy(cfg.sta.ssid, cfg.sta.password, ssid, password))
         return ESP_ERR_INVALID_ARG;
-    memcpy(cfg.sta.ssid, ssid, ssid_len);
-    memcpy(cfg.sta.password, password, pass_len);
-    cfg.sta.threshold.authmode = pass_len ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    size_t ssid_len = strlen(ssid);
+    cfg.sta.threshold.authmode = password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
     err = esp_wifi_set_config(WIFI_IF_STA, &cfg);
     memset(&cfg, 0, sizeof cfg);
     if (err != ESP_OK || cancelled()) return err != ESP_OK ? err : ESP_ERR_INVALID_STATE;
