@@ -365,7 +365,14 @@ static void send_diagnostics(auth_mode_t auth)
     cJSON_AddStringToObject(root, "event", "diagnostics");
     cJSON_AddStringToObject(root, "firmware", FW_VERSION);
     cJSON_AddStringToObject(root, "model", TESSERAE_DEVICE_MODEL);
-    cJSON_AddNumberToObject(root, "battery_mv", power_battery_mv());
+    int mv = power_battery_mv();
+    if (mv >= LOWBATT_MIN_PLAUSIBLE_MV && mv <= 5000) {
+        cJSON_AddNumberToObject(root, "battery_mv", mv);
+        cJSON_AddNumberToObject(root, "battery_pct", power_battery_pct(mv));
+    } else {
+        cJSON_AddNullToObject(root, "battery_mv");
+        cJSON_AddNullToObject(root, "battery_pct");
+    }
     cJSON_AddNumberToObject(root, "free_heap", esp_get_free_heap_size());
     cJSON_AddNumberToObject(root, "reset_reason", esp_reset_reason());
     char ssid[33] = {0}, password[65] = {0}, ip[48] = {0}, server[160] = {0};
@@ -576,12 +583,12 @@ static void photo_command(auth_mode_t auth, const char *op, const cJSON *root) {
         // while the radio loads the rail. Invalid readings are unknown, not 0 V.
         int mv = power_battery_mv();
         bool valid_battery = mv >= LOWBATT_MIN_PLAUSIBLE_MV && mv <= 5000;
-        char battery[80];
+        char battery[96];
         if (valid_battery)
-            snprintf(battery, sizeof battery, "\"battery_mv\":%d,\"low_battery\":%s",
-                     mv, mv < LOWBATT_ARM_MV ? "true" : "false");
+            snprintf(battery, sizeof battery, "\"battery_mv\":%d,\"battery_pct\":%d,\"low_battery\":%s",
+                     mv, power_battery_pct(mv), mv < LOWBATT_ARM_MV ? "true" : "false");
         else
-            snprintf(battery, sizeof battery, "\"battery_mv\":null,\"low_battery\":null");
+            snprintf(battery, sizeof battery, "\"battery_mv\":null,\"battery_pct\":null,\"low_battery\":null");
         char reply[320];
         snprintf(reply, sizeof reply,
                  "{\"event\":\"photo_info\",\"version\":1,\"width\":400,"

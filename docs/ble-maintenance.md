@@ -100,7 +100,7 @@ Authenticated commands:
 
 | Command | Result |
 | --- | --- |
-| `{"op":"diagnostics"}` | Existing diagnostics event plus `"refresh_speed":"5s"` (or `10s`, `native`) |
+| `{"op":"diagnostics"}` | Existing diagnostics event plus `battery_mv`, `battery_pct` and `"refresh_speed":"5s"` (or `10s`, `native`); invalid battery readings are null |
 | `{"op":"set_refresh_speed","value":"10s"}` | `{"event":"refresh_speed","value":"10s"}` after successful NVS commit |
 | `{"op":"scan"}` | `scan_started`, zero or more `network` events, `scan_complete` |
 | `{"op":"stage","ssid":"…","password":"…","preserve_server":true}` | `staged`; credentials stay in RAM |

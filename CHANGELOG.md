@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Bluetooth photo status and maintenance diagnostics include `battery_pct`,
+  using the same cached voltage and discharge curve as the network heartbeat.
+  Unavailable battery readings are null rather than a reported empty battery.
+
 ## 0.9.12
 
 - Use PicPak's assigned BLE hardware code 20 in setup/maintenance and photo

@@ -111,12 +111,13 @@ using reliable writes. Do not base64-encode an entire image into a control messa
    `write_without_response:true` opts into dynamic data sizing and the recovery
    barrier below. The pixel format, 192-byte maximum, service ID and SHA-256 are
    unchanged, so existing PicPak senders continue working.
-   It also returns optional `battery_mv`, `low_battery`, `refresh_speed`
+   It also returns optional `battery_mv`, `battery_pct`, `low_battery`, `refresh_speed`
    (`5s`/`10s`/`native`) and `screen_mode` (`wifi`/`bluetooth`). Battery voltage
    is the cached reading taken on this wake before radio/display load, not a
-   live charging indicator. `low_battery` means a valid reading below the
+   live charging indicator. `battery_pct` uses the same discharge curve as
+   Wi-Fi heartbeats (3900 mV is 65%). `low_battery` means a valid reading below the
    existing 3400 mV low-voltage threshold; it does not change the protection
-   gate. Implausible readings outside 2500–5000 mV return null for both battery
+   gate. Implausible readings outside 2500–5000 mV return null for all three battery
    fields. Status is sent over the authenticated connection, without Wi-Fi or
    additional advertising. Older apps ignore these fields; newer apps omit
    unavailable values when connected to older photo firmware. Firmware/model
