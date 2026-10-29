@@ -17,7 +17,7 @@
 #include <string.h>
 #include <strings.h>   // strcasecmp
 #include "esp_attr.h"  // RTC_DATA_ATTR
-#include "esp_crt_bundle.h"
+#include "tls_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
 
@@ -66,7 +66,7 @@ static void note_auth(int status) {
 bool relay_pairing_revoked(void) { return s_auth_fail_streak >= 2; }
 
 void relay_forget_revoked_pairing(void) {
-    ESP_LOGW(TAG, "relay pairing revoked; clearing mailbox identity and key");
+    ESP_LOGW(TAG, "relay pairing revoked; clearing mailbox credentials");
     config_forget_relay_pairing();
     s_auth_fail_streak = 0;
 }
@@ -108,7 +108,9 @@ typedef struct {
 static esp_err_t on_evt(esp_http_client_event_t *e) {
     rx_t *rx = e->user_data;
     if (!rx) return ESP_OK;
-    if (e->event_id == HTTP_EVENT_ON_HEADER) {
+    if (e->event_id == HTTP_EVENT_ON_CONNECTED && !strncmp(s_http_origin,"https://",8)) {
+        ESP_LOGI(TAG,"TLS certificate verified: %s",s_http_origin);
+    } else if (e->event_id == HTTP_EVENT_ON_HEADER) {
         rx->headers_seen = true;
         if (rx->etag && strcasecmp(e->header_key, "ETag") == 0)
             strlcpy(rx->etag, e->header_value, rx->etag_cap);
@@ -167,7 +169,7 @@ static int relay_request(const char *url, const char *body, const char *bearer,
                 .timeout_ms = RELAY_HTTP_MS, .buffer_size = 2048, .buffer_size_tx = 1024,
                 .disable_auto_redirect = true,
             };
-            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = tls_bundle_attach;
             s_http = esp_http_client_init(&cfg);
             if (!s_http) return -1;
             strlcpy(s_http_origin, origin, sizeof(s_http_origin));
@@ -348,7 +350,12 @@ static relay_pair_result_t pair_poll(const char *relay_url, const char *relay_co
         return RELAY_PAIR_ERROR;
     }
 
-    config_set_relay_paired(pr.install_id, pr.device_id, pr.device_token, key);
+    esp_err_t saved = config_set_relay_paired(pr.install_id, pr.device_id, pr.device_token, key);
+    if (saved != ESP_OK) {
+        memset(key, 0, sizeof key);
+        ESP_LOGW(TAG, "pairing credentials not saved: %s", esp_err_to_name(saved));
+        return RELAY_PAIR_ERROR;
+    }
     s_connection_ok = true;
     config_set_relay_etag("");          // new mailbox: nothing to match
     memset(key, 0, sizeof key);

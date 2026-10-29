@@ -8,7 +8,7 @@
 // the relay holds ciphertext, two public keys and a token hash, never the frame
 // key. This is an ALTERNATIVE to the direct REST/MQTT path: main.c prefers the
 // relay when it is configured. Crypto lives in relay_crypto.[ch]; wire handling
-// in relay_wire.[ch]; NVS state in config_store (the "relay" namespace).
+// in relay_wire.[ch]; saved state in config_profiles.
 #pragma once
 #include "esp_system.h"   // esp_reset_reason_t
 #include <stdbool.h>

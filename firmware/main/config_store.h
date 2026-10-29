@@ -1,4 +1,4 @@
-// config_store.h — NVS-backed config with secrets.h fallbacks.
+// config_store.h — Shared device settings and independent saved connections.
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #pragma once
@@ -39,7 +39,7 @@ bool config_get_ap_hint(uint8_t bssid[6], uint8_t *chan);
 void config_set_ap_hint(const uint8_t bssid[6], uint8_t chan);
 void config_clear_ap_hint(void);
 
-// Display source is independent of the REST/MQTT/relay transport.
+// Display source is independent of the selected network connection.
 // A single committed blob stores mode + the 32-byte photo authorization key.
 bool config_screen_is_bluetooth(void);
 bool config_get_photo_key(uint8_t key[32]);
@@ -48,7 +48,7 @@ esp_err_t config_save_screen_mode(bool bluetooth, const uint8_t key[32]);
 // --- portal write path ---
 void config_set_wifi(const char *ssid, const char *pass);   // blank pass keeps the password only for the same SSID
 void config_set_server_url(const char *url);
-void config_set_transport(uint8_t mode);                    // 0=MQTT, 1=REST
+void config_set_transport(uint8_t mode);                    // 0=MQTT, 1=Local REST, 2=Relay, 3=Cloud
 uint8_t config_get_transport(uint8_t fallback);
 void config_set_waveform(uint8_t mode);                     // 0=5s, 1=10s, 2=native MTP
 uint8_t config_get_waveform(uint8_t fallback);
@@ -61,18 +61,16 @@ bool config_take_ble_recovery(void);
 void config_set_pairing_code(const char *code);
 void config_get_pairing_code(char *out, size_t out_sz);   // empty if none set
 
-// --- cloud relay (mutually-exclusive third transport) ---
-// Stored in a dedicated "relay" NVS namespace. A relay-paired device holds a
-// frame key and talks only to the relay mailbox; see relay.c.
-bool config_relay_ready(void);        // frame key present
-bool config_relay_configured(void);   // url set && (ready || pairing code set)
+// Relay credentials remain saved while another connection is active.
+bool config_relay_ready(void);        // selected, valid mailbox credentials
+bool config_relay_configured(void);   // Relay selected, including after removal
 void config_get_relay_url(char *out, size_t out_sz);
 void config_set_relay_url(const char *url);
 void config_get_relay_code(char *out, size_t out_sz);
 void config_set_relay_code(const char *code);
 bool config_get_relay_priv(uint8_t priv[32]);      // false if absent
 esp_err_t config_set_relay_priv(const uint8_t priv[32]);
-void config_set_relay_paired(const char *install, const char *device,
+esp_err_t config_set_relay_paired(const char *install, const char *device,
                              const char *token, const uint8_t key[32]);
 void config_get_relay_install(char *out, size_t out_sz);
 void config_get_relay_device(char *out, size_t out_sz);
@@ -82,12 +80,10 @@ void config_get_relay_etag(char *out, size_t out_sz);
 void config_set_relay_etag(const char *etag);
 void config_get_relay_config_etag(char *out, size_t out_sz);
 void config_set_relay_config_etag(const char *etag);
-void config_clear_relay(void);        // erase all relay state
-// Drop the pairing (code, priv, ids, token, frame key, etags) but KEEP the relay
-// url — used on a confirmed revoke so re-pairing pre-fills the URL. After this,
-// config_relay_ready()/configured() are false until a fresh code re-pairs.
+void config_clear_relay(void);        // clear credentials, retain endpoint
+// Mark removal, keeping Relay selected and its endpoint/identity visible.
 void config_forget_relay_pairing(void);
-void config_set_mqtt(const char *uri, const char *user, const char *pass);  // blank pass keeps the password only for the same SSID
+void config_set_mqtt(const char *uri, const char *user, const char *pass);  // blank password keeps it only for the same broker/user
 // MQTT broker config (NVS -> secrets -> ""). All outputs always NUL-terminated.
 void config_get_mqtt(char *uri, size_t uri_sz, char *user, size_t user_sz,
                      char *pass, size_t pass_sz);
@@ -106,3 +102,21 @@ bool config_take_paired_pending(void);   // returns flag, then clears it (one-sh
 // Remember a charge screen until another image has been painted successfully.
 bool config_lowbatt_screen_pending(void);
 esp_err_t config_set_lowbatt_screen(bool pending);
+
+#define SETUP_CLOUD_URL "https://cloud.tesserae.ink"
+typedef enum { CONFIG_PROFILE_MQTT=0, CONFIG_PROFILE_LOCAL=1,
+               CONFIG_PROFILE_RELAY=2, CONFIG_PROFILE_CLOUD=3 } config_profile_t;
+typedef struct {
+    char server[160], id[64], user[64];
+    bool paired, pending;
+} config_profile_view_t;
+esp_err_t config_profiles_init(void);
+config_profile_t config_active_profile(void);
+void config_get_profile(config_profile_t mode, config_profile_view_t *out);
+bool config_rest_unpaired(void);
+esp_err_t config_note_rest_unregistered(void);
+bool config_relay_revoked(void);
+esp_err_t config_save_pairing(const char *id, const char *token, bool consume_code);
+// Save only the selected connection; blank codes preserve matching credentials.
+esp_err_t config_save_connection(config_profile_t mode, const char *server,
+    const char *id, const char *code, const char *user, const char *password);

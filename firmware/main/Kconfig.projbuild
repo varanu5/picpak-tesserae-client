@@ -1,0 +1,4 @@
+config PICPAK_CROSS_SIGNED_TLS
+    bool
+    default y
+    select MBEDTLS_X509_TRUSTED_CERT_CALLBACK

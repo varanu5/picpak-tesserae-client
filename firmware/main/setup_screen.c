@@ -9,17 +9,17 @@
 
 void setup_screen_network(uint8_t *fb, const char *ssid) {
     // Replace the network row in the embedded setup screen.
-    for (int y = 134; y < 170; y++)
-        memset(fb + (EPD_H - 1 - y) * (EPD_W / 4) + 152 / 4,
-               0x55, (EPD_W - 152) / 4);
-    int x = 152;
+    for (int y = 142; y < 172; y++)
+        memset(fb + (EPD_H - 1 - y) * (EPD_W / 4) + 156 / 4,
+               0x55, (EPD_W - 156) / 4);
+    int x = 156;
     for (; *ssid; ssid++) {
         for (size_t i = 0; i < sizeof(setup_glyphs) / sizeof(setup_glyphs[0]); i++) {
             if (setup_glyphs[i].ch != *ssid) continue;
             for (int row = 0; row < 24; row++)
                 for (int col = 0; col < 24 && x + col < EPD_W; col++) {
                     if (!(setup_glyphs[i].rows[row] & (1u << col))) continue;
-                    size_t at = (size_t)(EPD_H - 1 - (136 + row)) * (EPD_W / 4)
+                    size_t at = (size_t)(EPD_H - 1 - (144 + row)) * (EPD_W / 4)
                                 + (x + col) / 4;
                     fb[at] &= (uint8_t)~(3u << (6 - 2 * ((x + col) % 4)));
                 }

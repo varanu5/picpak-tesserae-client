@@ -21,6 +21,8 @@ extern const uint8_t _binary_splash_setup_bin_start[];
 extern const uint8_t _binary_splash_setup_bin_end[];
 extern const uint8_t _binary_splash_paired_bin_start[];
 extern const uint8_t _binary_splash_paired_bin_end[];
+extern const uint8_t _binary_splash_register_bin_start[];
+extern const uint8_t _binary_splash_register_bin_end[];
 extern const uint8_t _binary_splash_lowbatt_bin_start[];
 extern const uint8_t _binary_splash_lowbatt_bin_end[];
 extern const uint8_t _binary_splash_revoked_bin_start[];
@@ -33,6 +35,7 @@ static esp_err_t paint(const uint8_t *start, const uint8_t *end, const char *lab
                  label, (unsigned)len, (unsigned)EPD_FB_BYTES);
         return ESP_ERR_INVALID_SIZE;
     }
+    config_clear_frame_ref();
     ESP_LOGI(TAG, "painting %s splash (~13-22 s)...", label);
     esp_err_t err = epd_present(start);
     if (err != ESP_OK)
@@ -57,6 +60,11 @@ esp_err_t splash_show_setup(void) {
 }
 esp_err_t splash_show_paired(void) {
     esp_err_t err = paint(_binary_splash_paired_bin_start, _binary_splash_paired_bin_end, "paired");
+    if (err == ESP_OK) config_set_lowbatt_screen(false);
+    return err;
+}
+esp_err_t splash_show_registration(void) {
+    esp_err_t err = paint(_binary_splash_register_bin_start, _binary_splash_register_bin_end, "registration");
     if (err == ESP_OK) config_set_lowbatt_screen(false);
     return err;
 }

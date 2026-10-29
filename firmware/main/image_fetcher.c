@@ -3,7 +3,7 @@
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "image_fetcher.h"
 #include "esp_http_client.h"
-#include "esp_crt_bundle.h"
+#include "tls_bundle.h"
 #include "esp_log.h"
 
 #include <string.h>
@@ -14,7 +14,7 @@ int image_fetch(const char *url, uint8_t *buf, size_t buf_sz) {
     esp_http_client_config_t cfg = { .url = url, .timeout_ms = 20000 };
     // Same conditional as rest_handler: CA bundle only on https URLs.
     if (strncmp(url, "https://", 8) == 0)
-        cfg.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.crt_bundle_attach = tls_bundle_attach;
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
     if (!c) return -1;
     if (esp_http_client_open(c, 0) != ESP_OK) { esp_http_client_cleanup(c); return -1; }

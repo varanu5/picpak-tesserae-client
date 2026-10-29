@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.15
+
+- Independent Local REST, Cloud, Relay and MQTT connection settings and schedules; blank codes retain matching pairings.
+- Cloud claim-code setup and editable Device IDs without a required prefix.
+- Updated setup portal with saved device, connection, endpoint, firmware and setup-IP status.
+- Relay removal retains Relay mode; confirmed REST/Cloud removal uses the same Unpaired screen and daily sleep.
+- Registration instructions after unclaimed Local REST setup, Connected guidance after a successful connection, and consistent setup, waiting, removal and battery artwork.
+- Cross-signed TLS chains use candidate roots from the trusted bundle on ESP-IDF 5.4.4; hostname, signature and validity checks remain enabled.
+
 ## 0.9.13
 
 - Bluetooth photo status and maintenance diagnostics include `battery_pct`,

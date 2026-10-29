@@ -6,6 +6,10 @@
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "provisioning.h"
 #include "setup_identity.h"
+#include "setup_request.h"
+#include "portal_view.h"
+#include "esp_random.h"
+#include "esp_mac.h"
 #include "provision_form.h"
 #include "wifi_credentials.h"
 #include "mqtt_parse.h"
@@ -115,572 +119,305 @@ static void dns_hijack_task(void *arg)
     vTaskDelete(NULL);
 }
 
-// ---------- HTML (inline; chunked-sent) ----------
-static const char k_head[] =
-"<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
-"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">"
-"<title>Tesserae Setup</title>"
-"<style>"
-":root{--bg:#f1f0ec;--surface:#fff;--fg:#18181b;--muted:#71706c;"
-"--accent:#0d8c7e;--accent-hover:#0a6f63;--accent-soft:#e6f3f1;"
-"--border:#e6e5e1;--radius:10px}"
-"*{box-sizing:border-box}"
-"body{margin:0;padding:24px 16px env(safe-area-inset-bottom);"
-"font-family:-apple-system,BlinkMacSystemFont,\"Segoe UI\",Inter,system-ui,sans-serif;"
-"font-size:15px;background:var(--bg);color:var(--fg);line-height:1.45;"
-"-webkit-text-size-adjust:100%;-webkit-font-smoothing:antialiased}"
-"main{max-width:480px;margin:0 auto}"
-".brand{display:flex;align-items:center;gap:10px;margin:0 0 6px;"
-"font-weight:700;font-size:20px;letter-spacing:-0.015em}"
-".brand-mark{width:32px;height:32px;flex:none;"
-"filter:drop-shadow(0 2px 6px rgba(13,140,126,.28))}"
-".tag{color:var(--muted);font-size:13px;margin:0 0 18px}"
-".card{background:var(--surface);border:1px solid var(--border);"
-"border-radius:var(--radius);padding:18px 16px;margin-bottom:14px}"
-".card h2{margin:0 0 14px;font-size:11px;text-transform:uppercase;"
-"letter-spacing:0.08em;color:var(--muted);font-weight:600}"
-".status{display:grid;grid-template-columns:auto 1fr;gap:6px 12px;"
-"font-size:13px;color:var(--muted);margin-bottom:14px;padding:14px 16px;"
-"background:var(--surface);border:1px solid var(--border);"
-"border-radius:var(--radius)}"
-".status .k{font-weight:600;color:var(--fg)}"
-".status code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
-"font-size:12px;background:#fafaf9;padding:1px 6px;border-radius:4px;border:1px solid var(--border)}"
-".field{margin-bottom:14px}"
-".field:last-child{margin-bottom:0}"
-"label{display:block;font-weight:500;font-size:13px;margin-bottom:6px;color:var(--fg)}"
-"input:not([type=radio]):not([type=checkbox]),select{"
-"width:100%;padding:10px 12px;border:1px solid var(--border);"
-"border-radius:6px;background:var(--surface);font:inherit;font-size:15px;"
-"color:var(--fg);-webkit-appearance:none;appearance:none;"
-"transition:border-color .12s,box-shadow .12s}"
-"input:focus,select:focus{outline:none;border-color:var(--accent);"
-"box-shadow:0 0 0 3px rgba(13,140,126,.18)}"
-"input[type=radio]{width:18px;height:18px;flex:0 0 auto;margin:1px 12px 0 0;"
-"accent-color:var(--accent);cursor:pointer}"
-"label.radio{display:flex;align-items:flex-start;font-weight:500;"
-"font-size:14px;margin:0;cursor:pointer;color:var(--fg);"
-"padding:12px;border:1px solid var(--border);border-radius:8px;"
-"transition:border-color .12s,background .12s}"
-"label.radio+label.radio{margin-top:10px}"
-"label.radio:has(input:checked){border-color:var(--accent);"
-"background:var(--accent-soft)}"
-"label.radio strong{font-weight:600}"
-"select{background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),"
-"linear-gradient(135deg,var(--muted) 50%,transparent 50%);"
-"background-position:calc(100% - 16px) 50%,calc(100% - 11px) 50%;"
-"background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:28px;cursor:pointer}"
-".pw{position:relative}"
-".pw input{padding-right:64px}"
-".pw button{position:absolute;right:4px;top:50%;transform:translateY(-50%);"
-"background:none;border:0;color:var(--accent);font:inherit;font-size:13px;"
-"font-weight:600;padding:8px 10px;cursor:pointer;border-radius:4px}"
-".pw button:hover{background:var(--accent-soft)}"
-".hint{margin-top:6px;font-size:12px;color:var(--muted)}"
-".credits{margin:20px 4px 6px;text-align:center;font-size:11.5px;"
-"color:var(--muted);line-height:1.8}"
-".credits span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}"
-".hint code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;"
-"background:#fafaf9;padding:1px 5px;border-radius:3px;border:1px solid var(--border);font-size:11px}"
-".err{background:#fef2f2;border:1px solid #fecaca;color:#b91c1c;"
-"padding:12px 14px;border-radius:var(--radius);margin-bottom:14px;font-size:14px}"
-"button.submit{width:100%;padding:12px 16px;border:0;border-radius:8px;"
-"background:var(--accent);color:#fff;font:inherit;font-size:15px;"
-"font-weight:600;cursor:pointer;margin-top:4px;"
-"transition:background .12s}"
-"button.submit:hover{background:var(--accent-hover)}"
-"button.submit:active{transform:translateY(1px)}"
-"</style></head><body><main>"
-/* Brand mark: the exact tesserae/static/brand/icon.svg (rounded-square gradient
- * + two white 0.85-alpha quadrants clipped to an inner rounded rect). */
-"<div class=\"brand\">"
-"<svg class=\"brand-mark\" viewBox=\"0 0 256 256\" width=\"32\" height=\"32\" aria-hidden=\"true\">"
-"<defs>"
-"<linearGradient id=\"tess-bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">"
-"<stop offset=\"0\" stop-color=\"#0d8c7e\"/><stop offset=\"1\" stop-color=\"#0a6f63\"/>"
-"</linearGradient>"
-"<clipPath id=\"tess-inner\"><rect x=\"55\" y=\"55\" width=\"146\" height=\"146\" rx=\"27\" ry=\"27\"/></clipPath>"
-"</defs>"
-"<rect x=\"0\" y=\"0\" width=\"256\" height=\"256\" rx=\"72\" ry=\"72\" fill=\"url(#tess-bg)\"/>"
-"<g clip-path=\"url(#tess-inner)\" fill=\"#ffffff\" fill-opacity=\"0.85\">"
-"<rect x=\"128\" y=\"55\" width=\"73\" height=\"73\"/>"
-"<rect x=\"55\" y=\"128\" width=\"73\" height=\"73\"/>"
-"</g>"
-"</svg>"
-"<span>Tesserae</span></div>"
-"<p class=\"tag\">Device setup</p>";
-
-// WiFi card; %s x2 = (ssid prefill, scan-picker HTML or empty)
-static const char k_form_wifi_fmt[] =
-"<form method=\"POST\" action=\"/save\">"
-"<section class=\"card\"><h2>WiFi network</h2>"
-"<div class=\"field\">"
-"<label for=\"ssid\">Network name (SSID) *</label>"
-"<input id=\"ssid\" name=\"ssid\" required maxlength=\"32\" "
-"autocomplete=\"off\" value=\"%s\" placeholder=\"my-home-wifi\">"
-"</div>"
-"%s"
-"<div class=\"field pw\">"
-"<label for=\"wifi-pw\">Password</label>"
-"<input id=\"wifi-pw\" name=\"pass\" type=\"password\" maxlength=\"64\" autocomplete=\"off\">"
-"<button type=\"button\" data-toggle=\"wifi-pw\" aria-label=\"Show password\">Show</button>"
-"<p class=\"hint\">Leave blank to keep the password for the same network. For a different open network, leave it blank.</p>"
-"</div>"
-"</section>";
-
-// Transport-mode card; %s x3 = (mqtt_checked, rest_checked, relay_checked) —
-// pre-checked from the stored config so re-provisioning reopens on the current mode.
-static const char k_form_transport_fmt[] =
-"<section class=\"card\"><h2>Transport</h2>"
-"<div class=\"field\">"
-"<label class=\"radio\" for=\"tr-mqtt\">"
-"<input type=\"radio\" name=\"transport\" value=\"mqtt\" id=\"tr-mqtt\"%s>"
-"<span><strong>MQTT broker</strong>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"Subscribes to a retained frame topic. Requires a broker on your LAN "
-"(Mosquitto or Tesserae&rsquo;s embedded broker).</p>"
-"</span>"
-"</label>"
-"<label class=\"radio\" for=\"tr-rest\">"
-"<input type=\"radio\" name=\"transport\" value=\"rest\" id=\"tr-rest\"%s>"
-"<span><strong>REST API</strong> <strong>(recommended)</strong>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"Polls the Tesserae server directly. No broker needed.</p>"
-"</span>"
-"</label>"
-"<label class=\"radio\" for=\"tr-relay\">"
-"<input type=\"radio\" name=\"transport\" value=\"relay\" id=\"tr-relay\"%s>"
-"<span><strong>CLOUD RELAY</strong> <span style=\"color:var(--muted);font-weight:400\">(remote panel)</span>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"For a panel away from your Tesserae server (another home, CGNAT). Talks to a "
-"relay mailbox; no server URL needed.</p>"
-"</span>"
-"</label>"
-"</div>"
-"</section>";
-
-// Refresh-speed card; %s x3 = (w5_checked, w10_checked, wnative_checked). Always
-// visible (orthogonal to transport). Values map to config_set_waveform / epd_waveform_t.
-static const char k_form_waveform_fmt[] =
-"<section class=\"card\"><h2>Refresh speed</h2>"
-"<div class=\"field\">"
-"<label class=\"radio\" for=\"wf-5s\">"
-"<input type=\"radio\" name=\"waveform\" value=\"5s\" id=\"wf-5s\"%s>"
-"<span><strong>5 s</strong>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"Fastest updates. Colour and refresh compatibility vary by panel.</p>"
-"</span>"
-"</label>"
-"<label class=\"radio\" for=\"wf-10s\">"
-"<input type=\"radio\" name=\"waveform\" value=\"10s\" id=\"wf-10s\"%s>"
-"<span><strong>10 s</strong>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"A slower fast-refresh option. Colour and refresh compatibility vary by panel.</p>"
-"</span>"
-"</label>"
-"<label class=\"radio\" for=\"wf-native\">"
-"<input type=\"radio\" name=\"waveform\" value=\"native\" id=\"wf-native\"%s>"
-"<span><strong>Native</strong>"
-"<p class=\"hint\" style=\"margin:2px 0 0\">"
-"Default for fresh installations. Uses the panel's built-in waveform; "
-"refresh takes longer than fast modes.</p>"
-"</span>"
-"</label>"
-"</div>"
-"</section>";
-
-// Device + MQTT card; %s x3 = (device_id, mqtt_uri, mqtt_user).
-static const char k_form_mqtt_fmt[] =
-"<section class=\"card hide-on-relay\"><h2>Device</h2>"
-"<div class=\"field\">"
-"<label for=\"device_id\">Device id <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"device_id\" name=\"device_id\" maxlength=\"32\" "
-"pattern=\"[a-z][a-z0-9_-]{1,31}\" autocomplete=\"off\" "
-"value=\"%s\" placeholder=\"auto (picpak-xxxxxx)\">"
-"<p class=\"hint\">Leave blank to auto-derive from the MAC.</p>"
-"</div>"
-"<div class=\"mqtt-only\">"
-"<h2 style=\"margin-top:1.2em\">MQTT broker</h2>"
-"<div class=\"field\">"
-"<label for=\"mqtt_uri\">Broker URI</label>"
-"<input id=\"mqtt_uri\" name=\"mqtt_uri\" maxlength=\"159\" "
-"autocomplete=\"off\" value=\"%s\" placeholder=\"mqtt://192.168.1.50:1883\">"
-"<p class=\"hint\">Use <code>mqtts://</code> for TLS; scheme is added if omitted.</p>"
-"</div>"
-"<div class=\"field\">"
-"<label for=\"mqtt_user\">Username <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"mqtt_user\" name=\"mqtt_user\" maxlength=\"63\" autocomplete=\"off\" value=\"%s\">"
-"</div>"
-"<div class=\"field pw\">"
-"<label for=\"mqtt-pw\">Password <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"mqtt-pw\" name=\"mqtt_pass\" type=\"password\" maxlength=\"63\" autocomplete=\"off\">"
-"<button type=\"button\" data-toggle=\"mqtt-pw\" aria-label=\"Show password\">Show</button>"
-"<p class=\"hint\">Leave blank to keep the current password.</p>"
-"</div>"
-"</div>"
-"</section>";
-
-// REST-API card; %s x2 = (server_url, pairing_code). Hidden by JS when transport=mqtt.
-static const char k_form_rest_fmt[] =
-"<section class=\"card rest-only\"><h2>Tesserae server</h2>"
-"<div class=\"field\">"
-"<label for=\"server_url\">Server URL</label>"
-"<input id=\"server_url\" name=\"server_url\" maxlength=\"159\" "
-"autocomplete=\"off\" value=\"%s\" placeholder=\"http://tesserae.local:8765\">"
-"<p class=\"hint\">Where Tesserae is reachable from this network &mdash; "
-"hostname or LAN IP (e.g. <code>http://192.168.1.100:8765</code>). "
-"<code>https://</code> needs a publicly-trusted certificate; "
-"self-signed won&rsquo;t work.</p>"
-"</div>"
-"<div class=\"field\">"
-"<label for=\"pairing_code\">Pairing code <span style=\"color:var(--muted);font-weight:400\">(optional)</span></label>"
-"<input id=\"pairing_code\" name=\"pairing_code\" maxlength=\"32\" "
-"autocomplete=\"off\" value=\"%s\">"
-"<p class=\"hint\">Leave blank for friendly discovery (admin clicks "
-"<em>Register</em> on Settings &rarr; Devices). Fill in to skip that "
-"step using a code from <em>Pair new device</em>.</p>"
-"</div>"
-"</section>";
-
-// Cloud-relay card; %s x2 = (relay_url, relay_code). Hidden by JS unless transport=relay.
-static const char k_form_relay_fmt[] =
-"<section class=\"card relay-only\"><h2>Cloud Relay</h2>"
-"<div class=\"field\">"
-"<label for=\"relay_url\">Relay URL</label>"
-"<input id=\"relay_url\" name=\"relay_url\" maxlength=\"159\" autocomplete=\"off\" "
-"value=\"%s\" placeholder=\"https://relay.tesserae.ink\">"
-"<p class=\"hint\">The cloud mailbox this panel and your home Tesserae both reach "
-"<em>outbound</em> &mdash; nothing on your network is opened. "
-"<strong>Leave blank</strong> to use the default, "
-"<code>https://relay.tesserae.ink</code>.</p>"
-"</div>"
-"<div class=\"field\">"
-"<label for=\"relay_code\">Pairing code</label>"
-"<input id=\"relay_code\" name=\"relay_code\" maxlength=\"32\" autocomplete=\"off\" "
-"value=\"%s\" placeholder=\"from Settings &rarr; Cloud relay\">"
-"<p class=\"hint\">A single-use code from your Tesserae server: "
-"<em>Settings &rarr; Cloud relay &rarr; Add a remote panel</em>.</p>"
-"</div>"
-"</section>";
-
-// Submit button + form close, emitted after the last card.
-static const char k_form_submit[] =
-"<button class=\"submit\" type=\"submit\">Save &amp; restart</button>"
-"</form>";
-
-static const char k_tail[] =
-"<script>"
-"document.querySelectorAll('[data-toggle]').forEach(b=>{"
-"b.addEventListener('click',()=>{"
-"const i=document.getElementById(b.dataset.toggle);"
-"const s=i.type==='password';"
-"i.type=s?'text':'password';"
-"b.textContent=s?'Hide':'Show';"
-"});"
-"});"
-"const pick=document.getElementById('ssid-pick');"
-"if(pick){pick.addEventListener('change',e=>{"
-"if(e.target.value){document.getElementById('ssid').value=e.target.value;"
-"document.getElementById('wifi-pw').focus();}"
-"});}"
-"function applyTransport(){"
-"const t=document.querySelector('input[name=transport]:checked').value;"
-"document.querySelectorAll('.mqtt-only').forEach(n=>n.style.display=(t=='mqtt')?'':'none');"
-"document.querySelectorAll('.rest-only').forEach(n=>n.style.display=(t=='rest')?'':'none');"
-"document.querySelectorAll('.relay-only').forEach(n=>n.style.display=(t=='relay')?'':'none');"
-"document.querySelectorAll('.hide-on-relay').forEach(n=>n.style.display=(t=='relay')?'none':'');"
-"}"
-"document.querySelectorAll('input[name=transport]').forEach(n=>n.addEventListener('change',applyTransport));"
-"applyTransport();"
-"</script>"
-// Credits footer. Plain text, not links: the captive portal's DNS hijack
-// redirects every URL back to this form, so an anchor would only reload the
-// page. GitHub repo slugs (author/repo) keep the lines short.
-"<div class=\"credits\">"
-"Dashboard companion &middot; <span>dmellok/tesserae</span><br>"
-"Firmware &middot; <span>varanu5/picpak-tesserae-client</span>"
-"</div>"
-"</main></body></html>";
-
-static const char k_thanks_html[] =
-"<!doctype html><html><head><meta charset=\"utf-8\">"
-"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
-"<title>Saved</title>"
-"<style>"
-"body{margin:0;padding:40px 16px;background:#f1f0ec;color:#18181b;"
-"font-family:-apple-system,BlinkMacSystemFont,system-ui,sans-serif;text-align:center}"
-".card{max-width:380px;margin:0 auto;background:#fff;border:1px solid #e6e5e1;"
-"border-radius:10px;padding:28px 20px}"
-"h1{margin:0 0 8px;font-size:20px;color:#0d8c7e}"
-"p{margin:0;color:#71706c;font-size:14px;line-height:1.5}"
-"</style></head><body>"
-"<div class=\"card\"><h1>Saved</h1>"
-"<p>Tesserae will reboot and apply the new settings now.</p></div>"
-"</body></html>";
-
-// ---------- HTTP handlers ----------
-
-// Render the settings form, pre-filled from config_store, with an optional error
-// banner. Sent chunked so we don't need a multi-KB stack buffer. Transport
-// defaults to REST (config_get_transport fallback) — our only working transport.
-static esp_err_t render_form(httpd_req_t *req, const char *error)
-{
-    char server_url[160] = {0};
-    config_get_server_url(server_url, sizeof server_url);
-    char ssid[33] = {0}, pass[65] = {0};
-    config_get_wifi(ssid, sizeof ssid, pass, sizeof pass);   // pass unused for the form
-
-    char device_id[33] = {0};
-    config_get_device_id(device_id, sizeof device_id);   // user-set or server-canonical
-
-    uint8_t transport = config_get_transport(1);   // 0=MQTT, 1=REST
-    char mqtt_uri[160] = {0}, mqtt_user[64] = {0}, mqtt_pass[64] = {0};
-    config_get_mqtt(mqtt_uri, sizeof mqtt_uri, mqtt_user, sizeof mqtt_user,
-                    mqtt_pass, sizeof mqtt_pass);   // pass unused for the form
-
-    // Cloud relay is orthogonal to the MQTT/REST transport int: when configured
-    // it wins at runtime, so the form pre-selects it (and neither MQTT nor REST).
-    bool relay_cfg = config_relay_configured();
-    char relay_url[160] = {0}, relay_code[40] = {0};
-    config_get_relay_url(relay_url, sizeof relay_url);
-    config_get_relay_code(relay_code, sizeof relay_code);
-
-    // e_server sized for the worst case: 159-char URL fully &quot;-escaped
-    // (159 x 6 = 954 + NUL) — 640 used to display a chopped URL in the form.
-    char e_ssid[160], e_server[960], e_devid[100];
-    provform_html_escape(ssid,       e_ssid,   sizeof e_ssid);
-    provform_html_escape(server_url, e_server, sizeof e_server);
-    provform_html_escape(device_id,  e_devid,  sizeof e_devid);
-    // Broker URI worst case: 159 chars fully &quot;-escaped = 954 + NUL.
-    // Pairing code is single-use so never echoed back.
-    char e_uri[960], e_user[384];
-    provform_html_escape(mqtt_uri,  e_uri,  sizeof e_uri);
-    provform_html_escape(mqtt_user, e_user, sizeof e_user);
-    const char *e_pair = "";
-    // Relay URL worst case: 159 chars fully &quot;-escaped = 954 + NUL. The
-    // pairing code is echoed back so a typo can be corrected without re-typing.
-    char e_rurl[960], e_rcode[200];
-    provform_html_escape(relay_url,  e_rurl,  sizeof e_rurl);
-    provform_html_escape(relay_code, e_rcode, sizeof e_rcode);
-
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_sendstr_chunk(req, k_head);
-
-    if (error && *error) {
-        httpd_resp_sendstr_chunk(req, "<div class=\"err\">");
-        httpd_resp_sendstr_chunk(req, error);   // our own constant strings, safe
-        httpd_resp_sendstr_chunk(req, "</div>");
-    }
-
-    httpd_resp_sendstr_chunk(req,
-        "<div class=\"status\">"
-        "<span class=\"k\">IP</span><span><code>192.168.4.1 (setup AP)</code></span>"
-        "</div>");
-
-    // Scan-picker <select> from cached scan results (empty if the scan found nothing).
-    char picker[1024] = "";
-    if (s_scan_count > 0) {
-        size_t o = (size_t)snprintf(picker, sizeof picker,
-            "<div class=\"field\">"
-            "<label for=\"ssid-pick\">Or pick a nearby network</label>"
-            "<select id=\"ssid-pick\" autocomplete=\"off\">"
-            "<option value=\"\">-- pick a network --</option>");
-        for (int i = 0; i < s_scan_count && o + 128 < sizeof picker; i++) {
-            char esc[96];
-            provform_html_escape(s_scan[i].ssid, esc, sizeof esc);
-            int n = snprintf(picker + o, sizeof picker - o,
-                "<option value=\"%s\">%s (%d dBm%s)</option>",
-                esc, esc, s_scan[i].rssi, s_scan[i].secure ? "" : ", open");
-            if (n < 0 || (size_t)n >= sizeof picker - o) break;
-            o += (size_t)n;
-        }
-        if (o + 16 < sizeof picker) {
-            snprintf(picker + o, sizeof picker - o, "</select></div>");
-        }
-    }
-
-    // One buffer, reused for each card: snprintf then chunk-send in turn. Sized
-    // for the largest (the MQTT card: literal ~1.5 KB + e_devid(100) + e_uri(960)
-    // + e_user(384)). Sharing it keeps the httpd task stack (16 KB, see
-    // cfg.stack_size below) well under budget as cards are added.
-    char form[3072];
-    snprintf(form, sizeof form, k_form_wifi_fmt, e_ssid, picker);
-    httpd_resp_sendstr_chunk(req, form);
-
-    snprintf(form, sizeof form, k_form_transport_fmt,
-             (!relay_cfg && transport == 0) ? " checked" : "",
-             (!relay_cfg && transport == 1) ? " checked" : "",
-             relay_cfg ? " checked" : "");
-    httpd_resp_sendstr_chunk(req, form);
-
-    uint8_t waveform = config_get_waveform(DEFAULT_WAVEFORM);
-    snprintf(form, sizeof form, k_form_waveform_fmt,
-             (waveform == EPD_WAVE_5S)     ? " checked" : "",
-             (waveform == EPD_WAVE_10S)    ? " checked" : "",
-             (waveform == EPD_WAVE_NATIVE) ? " checked" : "");
-    httpd_resp_sendstr_chunk(req, form);
-
-    snprintf(form, sizeof form, k_form_mqtt_fmt, e_devid, e_uri, e_user);
-    httpd_resp_sendstr_chunk(req, form);
-
-    snprintf(form, sizeof form, k_form_rest_fmt, e_server, e_pair);
-    httpd_resp_sendstr_chunk(req, form);
-
-    snprintf(form, sizeof form, k_form_relay_fmt, e_rurl, e_rcode);
-    httpd_resp_sendstr_chunk(req, form);
-
-    httpd_resp_sendstr_chunk(req, k_form_submit);
-    httpd_resp_sendstr_chunk(req, k_tail);
-    httpd_resp_sendstr_chunk(req, NULL);   // terminate chunked response
-    return ESP_OK;
+static const char k_portal_html[] =
+"<!doctype html>\n"
+"<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->\n"
+"<!-- Copyright (C) 2026 varanu5 <https://github.com/varanu5> -->\n"
+"<html lang=\"en\">\n"
+"<head>\n"
+"<meta charset=\"utf-8\">\n"
+"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">\n"
+"<title>PicPak setup</title>\n"
+"<style>\n"
+":root{color-scheme:light;--bg:#f1f0ec;--surface:#fff;--ink:#18181b;--muted:#62625f;--accent:#0d8c7e;--accent-hover:#0a6f63;--soft:#e6f3f1;--border:#deded8}\n"
+"*{box-sizing:border-box}\n"
+"body{margin:0;padding:24px 16px max(28px,env(safe-area-inset-bottom));background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,\"Segoe UI\",system-ui,sans-serif;-webkit-text-size-adjust:100%}\n"
+"main{max-width:480px;margin:auto}\n"
+".brand{display:flex;gap:10px;align-items:center;font-size:21px;font-weight:700;letter-spacing:-.02em}\n"
+".brand svg{flex:none;width:34px;height:34px}\n"
+"h1{font-size:14px;font-weight:400;color:var(--muted);margin:6px 0 18px}\n"
+"p{margin:0}.hint,.muted{color:var(--muted)}.hint{font-size:12px;line-height:1.5;margin-top:6px}\n"
+".status{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;font-size:12px;border:1px solid var(--border);border-radius:10px;background:var(--surface);padding:14px 16px;margin:0 0 14px}\n"
+".status dt{font-weight:600}.status dd{margin:0;color:var(--muted);overflow-wrap:anywhere}.status code{font-size:12px}\n"
+".card{border:1px solid var(--border);border-radius:12px;background:var(--surface);padding:18px 16px;margin-bottom:14px}\n"
+"[hidden]{display:none!important}\n"
+".card h2{font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 14px}\n"
+".field{margin-bottom:16px}.field:last-child{margin-bottom:0}\n"
+"label{display:block;font-weight:600;font-size:13px;margin-bottom:6px}\n"
+"input:not([type=checkbox]):not([type=radio]),select{width:100%;min-height:44px;border:1px solid var(--border);border-radius:7px;background:var(--surface);padding:10px 12px;color:var(--ink);font:inherit;font-size:16px;line-height:1.3}\n"
+"input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid #a8d8d0;outline-offset:2px}\n"
+"#relay-url::placeholder{color:var(--muted);opacity:1}\n"
+"input:disabled{background:#f5f5f2;color:var(--muted)}\n"
+".password{position:relative}.password input{padding-right:66px!important}.password button{position:absolute;right:3px;top:3px;min-height:38px;padding:0 12px;border:0;border-radius:5px;background:transparent;color:var(--accent);font:inherit;font-size:13px;font-weight:600;cursor:pointer}\n"
+".password button:hover{background:var(--soft)}\n"
+".check{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:400;margin:10px 0 0}.check input{flex:none;width:18px;height:18px;margin:0;accent-color:var(--accent)}\n"
+"fieldset{border:0;margin:0;padding:0;min-width:0}\n"
+".radio{display:flex;align-items:flex-start;gap:12px;padding:12px;border:1px solid var(--border);border-radius:8px;margin:0 0 9px;cursor:pointer;font-weight:400}\n"
+".radio:last-child{margin-bottom:0}.radio input{flex:none;width:18px;height:18px;margin:2px 0 0;accent-color:var(--accent)}\n"
+".radio:has(input:checked){background:var(--soft);border-color:var(--accent)}\n"
+".radio strong{font-size:14px;font-weight:600}.radio .hint{display:block;margin-top:3px}\n"
+".badge{display:inline-block;vertical-align:1px;font-size:10px;font-weight:500;color:var(--muted);border:1px solid var(--border);border-radius:4px;padding:1px 5px;margin-left:5px}\n"
+".refresh-help{margin-top:12px}.refresh-help p+p{margin-top:6px}\n"
+".submit{width:100%;min-height:48px;border:0;border-radius:8px;padding:12px 16px;background:var(--accent);color:white;font:inherit;font-size:15px;font-weight:600;cursor:pointer}\n"
+".submit:hover{background:var(--accent-hover)}button:disabled{opacity:.6;cursor:wait}\n"
+".notice{padding:12px 14px;background:#fff8dd;border:1px solid #dec781;border-radius:10px;font-size:13px;margin-bottom:14px;overflow-wrap:anywhere}.notice:empty{display:none}\n"
+"#progress{padding:2px 4px}footer{text-align:center;color:var(--muted);font-size:11px;line-height:1.8;margin:22px 0 0}footer span{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}code{overflow-wrap:anywhere}\n"
+"</style>\n"
+"</head>\n"
+"<body><main>\n"
+"<header>\n"
+"<div class=\"brand\">\n"
+"<svg viewBox=\"0 0 256 256\" width=\"34\" height=\"34\" aria-hidden=\"true\">\n"
+"<defs><linearGradient id=\"brand-bg\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\"><stop offset=\"0\" stop-color=\"#0d8c7e\"/><stop offset=\"1\" stop-color=\"#0a6f63\"/></linearGradient><clipPath id=\"brand-inner\"><rect x=\"55\" y=\"55\" width=\"146\" height=\"146\" rx=\"27\"/></clipPath></defs>\n"
+"<rect width=\"256\" height=\"256\" rx=\"72\" fill=\"url(#brand-bg)\"/>\n"
+"<g clip-path=\"url(#brand-inner)\" fill=\"white\" fill-opacity=\".85\"><rect x=\"128\" y=\"55\" width=\"73\" height=\"73\"/><rect x=\"55\" y=\"128\" width=\"73\" height=\"73\"/></g>\n"
+"</svg><span>Tesserae</span>\n"
+"</div><h1>Device setup</h1>\n"
+"</header>\n"
+"<dl class=\"status\"><dt>Device</dt><dd>PicPak</dd><dt>Firmware</dt><dd><code>{{version}}</code></dd><dt>Device ID</dt><dd><code>{{status_id}}</code></dd><dt>Connection</dt><dd>{{status_transport}}</dd><dt>{{status_endpoint_label}}</dt><dd><code>{{status_endpoint}}</code></dd><dt>Setup IP</dt><dd><code>192.168.4.1</code></dd></dl>\n"
+"<div class=\"notice\" role=\"alert\">{{error}}</div>\n"
+"<form method=\"post\" action=\"/save\" id=\"setup-form\">\n"
+"<input type=\"hidden\" name=\"nonce\" value=\"{{nonce}}\">\n"
+"<section class=\"card\"><h2>Wi-Fi network</h2>\n"
+"<div class=\"field\"><label for=\"ssid\">Network name (SSID)</label><input id=\"ssid\" name=\"ssid\" value=\"{{ssid}}\" maxlength=\"32\" required placeholder=\"my-home-wifi\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"></div>\n"
+"<div class=\"field\"><label for=\"network\">Or pick a nearby network</label><select id=\"network\"><option value=\"\">Choose a network</option>{{networks}}</select><p class=\"hint\">2.4 GHz networks found when setup opened. For a hidden network, enter its name above.</p></div>\n"
+"<div class=\"field\"><label for=\"pass\">Password</label><div class=\"password\"><input id=\"pass\" name=\"pass\" type=\"password\" maxlength=\"64\" autocomplete=\"new-password\"><button type=\"button\" id=\"toggle\" aria-label=\"Show password\" aria-controls=\"pass\" aria-pressed=\"false\">Show</button></div><p class=\"hint\">Leave blank to keep the password for the same network, or to join a different open network.</p></div>\n"
+"</section>\n"
+"<section class=\"card\"><h2 id=\"refresh-title\">Refresh speed</h2>\n"
+"<fieldset aria-labelledby=\"refresh-title\">\n"
+"<label class=\"radio\" for=\"wf-5s\"><input type=\"radio\" name=\"waveform\" value=\"5s\" id=\"wf-5s\" {{wave_5s}}><span><strong>5 s</strong><span class=\"badge\">Experimental</span><span class=\"hint\">Fastest updates. Colors may look softer than Native.</span></span></label>\n"
+"<label class=\"radio\" for=\"wf-10s\"><input type=\"radio\" name=\"waveform\" value=\"10s\" id=\"wf-10s\" {{wave_10s}}><span><strong>10 s</strong><span class=\"badge\">Experimental</span><span class=\"hint\">A slower fast mode. Compare color quality on your display.</span></span></label>\n"
+"<label class=\"radio\" for=\"wf-native\"><input type=\"radio\" name=\"waveform\" value=\"native\" id=\"wf-native\" {{wave_native}}><span><strong>Native</strong><span class=\"badge\">Default</span><span class=\"hint\">Uses the panel's built-in waveform. Refresh takes longer.</span></span></label>\n"
+"</fieldset>\n"
+"<div class=\"refresh-help\"><p class=\"hint\">Your refresh choice is saved with the other settings using Save &amp; restart below. The selected speed applies to images and all built-in screens. Native is the default until you choose another speed. Hold the front button for 20 seconds to return to setup.</p></div>\n"
+"</section>\n"
+"<section class=\"card\"><h2>Connection</h2>\n"
+"<noscript><p class=\"hint\">Fill in the fields for your selected connection only.</p></noscript>\n"
+"<label class=\"radio\"><input type=\"radio\" name=\"transport\" value=\"rest\" id=\"transport-rest\" {{transport_rest}}><span><strong>Local REST</strong><span class=\"hint\">Connect directly to your Tesserae server.</span></span></label>\n"
+"<label class=\"radio\"><input type=\"radio\" name=\"transport\" value=\"cloud\" id=\"transport-cloud\" {{transport_cloud}}><span><strong>Cloud</strong><span class=\"hint\">Connect to Tesserae Cloud with a claim code.</span></span></label>\n"
+"<label class=\"radio\"><input type=\"radio\" name=\"transport\" value=\"relay\" id=\"transport-relay\" {{transport_relay}}><span><strong>Relay</strong><span class=\"hint\">Receive encrypted images through a relay.</span></span></label>\n"
+"<label class=\"radio\"><input type=\"radio\" name=\"transport\" value=\"mqtt\" id=\"transport-mqtt\" {{transport_mqtt}}><span><strong>MQTT broker</strong><span class=\"hint\">Subscribe to retained frame topics on your broker.</span></span></label>\n"
+"</section>\n"
+"<section class=\"card\" id=\"mqtt-fields\"><h2>MQTT broker</h2>\n"
+"<div class=\"field\"><label for=\"mqtt-id\">Device ID (optional)</label><input id=\"mqtt-id\" name=\"mqtt_id\" value=\"{{mqtt_id}}\" maxlength=\"32\" pattern=\"[a-z][a-z0-9_\\-]{1,31}\" placeholder=\"picpak-kitchen\"><p class=\"hint\">Leave blank to keep this connection's saved ID or use a MAC-based ID.</p></div>\n"
+"<div class=\"field\"><label for=\"mqtt-uri\">Broker URI</label><input id=\"mqtt-uri\" name=\"mqtt_uri\" value=\"{{mqtt_uri}}\" maxlength=\"159\" data-required placeholder=\"mqtt://192.168.1.50:1883\"></div>\n"
+"<div class=\"field\"><label for=\"mqtt-user\">Username (optional)</label><input id=\"mqtt-user\" name=\"mqtt_user\" value=\"{{mqtt_user}}\" maxlength=\"63\" autocomplete=\"off\"></div>\n"
+"<div class=\"field\"><label for=\"mqtt-pass\">Password (optional)</label><input id=\"mqtt-pass\" name=\"mqtt_pass\" type=\"password\" maxlength=\"63\" autocomplete=\"new-password\"><p class=\"hint\">Blank keeps the password only for the same broker and username. MQTT uses broker credentials and device topics, without a pairing code.</p></div>\n"
+"</section>\n"
+"<section class=\"card\" id=\"rest-fields\"><h2>Local REST</h2>\n"
+"<div class=\"field\"><label for=\"id\">Device ID <span class=\"muted\">(optional)</span></label><input id=\"id\" name=\"id\" value=\"{{id}}\" maxlength=\"32\" pattern=\"[a-z][a-z0-9_\\-]{1,31}\" placeholder=\"picpak-kitchen\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"><p class=\"hint\">Leave blank to keep the saved ID for this connection. New devices get a name based on their MAC address, such as picpak-a1b2c3.</p></div>\n"
+"<div class=\"field\"><label for=\"server\">Server URL</label><input id=\"server\" name=\"server\" value=\"{{server}}\" maxlength=\"159\" data-required placeholder=\"http://tesserae.local:8765\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"><p class=\"hint\">Enter your Tesserae server address, starting with http:// or https://. Your display must be able to connect to it. For HTTPS, use a certificate from a trusted certificate provider.</p></div>\n"
+"<div class=\"field\"><label for=\"pair\">Pairing code <span class=\"muted\">(optional)</span></label><input id=\"pair\" name=\"pair\" inputmode=\"numeric\" maxlength=\"6\" pattern=\"[0-9]{6}\" placeholder=\"6-digit code\" autocomplete=\"off\"><p class=\"hint\">Leave blank and register in Settings → Devices, or enter a code from Pair new device. An existing pairing is kept when the server and device ID stay the same.</p></div>\n"
+"</section>\n"
+"<section class=\"card\" id=\"cloud-fields\"><h2>Tesserae Cloud</h2>\n"
+"<p class=\"hint\">Connects to <code>{{cloud_url}}</code>.</p>\n"
+"<div class=\"field\"><label for=\"cloud-id\">Device ID <span class=\"muted\">(optional)</span></label><input id=\"cloud-id\" name=\"cloud_id\" value=\"{{cloud_id}}\" maxlength=\"32\" pattern=\"[a-z][a-z0-9_\\-]{1,31}\" placeholder=\"picpak-kitchen\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"><p class=\"hint\">Leave blank to keep the saved ID for this connection. Use 2–32 lowercase letters, digits, hyphens or underscores, starting with a letter. Changing the ID requires a new claim code.</p></div>\n"
+"<div class=\"field\"><label for=\"cloud-code\">Cloud claim code <span class=\"muted\">(optional when paired)</span></label><input id=\"cloud-code\" name=\"cloud_code\" inputmode=\"numeric\" maxlength=\"15\" pattern=\"[0-9 ]{8,15}\" placeholder=\"1234 5678\" autocomplete=\"off\"><p class=\"hint\">In Tesserae Cloud, open Settings → Panels → Add a panel and enter the eight-digit code. Leave blank to keep an existing pairing when the Device ID stays the same, including Wi-Fi or refresh-speed changes. A new code starts pairing again.</p></div>\n"
+"</section>\n"
+"<section class=\"card\" id=\"relay-fields\"><h2>Relay</h2>\n"
+"<div class=\"field\"><label for=\"relay-url\">Relay URL</label><input id=\"relay-url\" name=\"relay_url\" value=\"{{relay_url}}\" placeholder=\"https://relay.tesserae.ink\" maxlength=\"159\" data-required autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"><p class=\"hint\">Use the relay address configured in your Tesserae server. Use HTTPS with a trusted certificate.</p></div>\n"
+"<div class=\"field\"><label for=\"relay-code\">Relay pairing code</label><input id=\"relay-code\" name=\"relay_code\" maxlength=\"32\" pattern=\"[A-Za-z0-9-]+\" autocomplete=\"off\" autocapitalize=\"none\" spellcheck=\"false\"><p class=\"hint\">Create a cloud relay pairing code in Tesserae and enter it here. Leave blank to keep an existing relay pairing at the same address.</p></div>\n"
+"<p class=\"hint\">If this device is removed from the relay, its screen will ask you to hold the front button for 20 seconds to open setup.</p>\n"
+"</section>\n"
+"<button class=\"submit\" id=\"submit\" type=\"submit\">Save &amp; restart</button>\n"
+"<p class=\"hint\" id=\"progress\" role=\"status\">Saves all settings above. After restarting, the display checks its connection. If setup fails, reconnect to its setup Wi-Fi for details.</p>\n"
+"</form>\n"
+"<footer>Dashboard companion · <span>dmellok/tesserae</span><br>PicPak firmware · <span>varanu5</span></footer>\n"
+"<script>\n"
+"function updateTransport(){\n"
+"const relay=document.getElementById('transport-relay').checked,cloud=document.getElementById('transport-cloud').checked,mqtt=document.getElementById('transport-mqtt').checked;\n"
+"for(const [id,active] of [['mqtt-fields',mqtt],['rest-fields',!relay&&!cloud&&!mqtt],['cloud-fields',cloud],['relay-fields',relay]]){\n"
+"const section=document.getElementById(id);section.hidden=!active;\n"
+"section.querySelectorAll('input').forEach(input=>{input.disabled=!active;input.required=active&&input.hasAttribute('data-required');});\n"
+"}}\n"
+"document.getElementById('transport-rest').addEventListener('change',updateTransport);\n"
+"document.getElementById('transport-cloud').addEventListener('change',updateTransport);\n"
+"document.getElementById('transport-relay').addEventListener('change',updateTransport);\n"
+"document.getElementById('transport-mqtt').addEventListener('change',updateTransport);\n"
+"updateTransport();\n"
+"const ssid=document.getElementById('ssid'),pw=document.getElementById('pass');\n"
+"document.getElementById('network').addEventListener('change',e=>{const o=e.target.selectedOptions[0];if(!o.value)return;ssid.value=o.value;pw.value='';pw.focus();});\n"
+"document.getElementById('toggle').addEventListener('click',e=>{const show=pw.type==='password';pw.type=show?'text':'password';e.target.textContent=show?'Hide':'Show';e.target.setAttribute('aria-label',show?'Hide password':'Show password');e.target.setAttribute('aria-pressed',String(show));});\n"
+"document.getElementById('setup-form').addEventListener('submit',()=>{const button=document.getElementById('submit');button.disabled=true;button.textContent='Saving…';document.getElementById('progress').textContent='Saving all settings. Keep this page open until the display restarts.';});\n"
+"</script>\n"
+"</main></body>\n"
+"</html>\n"
+;
+static char s_nonce[33];
+typedef struct {
+    httpd_req_t *req;
+    char ssid[200], server[960], relay_url[960], id[384], error[768], networks[8192];
+    char cloud_id[384], status_id[384], status_endpoint[960];
+    char mqtt_id[384], mqtt_uri[960], mqtt_user[384];
+    bool mqtt, saved_mqtt;
+    bool relay, cloud, saved_relay, saved_cloud;
+    display_mode_t display_mode;
+} view_t;
+static const char *view_value(const char *key,void *context) {
+    view_t *v=context;
+    if (!strcmp(key,"ssid")) return v->ssid;
+    if (!strcmp(key,"server")) return v->server;
+    if (!strcmp(key,"relay_url")) return v->relay_url;
+    if (!strcmp(key,"transport_rest")) return v->relay || v->cloud || v->mqtt ? "" : "checked";
+    if (!strcmp(key,"transport_relay")) return v->relay ? "checked" : "";
+    if (!strcmp(key,"transport_cloud")) return v->cloud ? "checked" : "";
+    if (!strcmp(key,"transport_mqtt")) return v->mqtt ? "checked" : "";
+    if (!strcmp(key,"mqtt_id")) return v->mqtt_id;
+    if (!strcmp(key,"mqtt_uri")) return v->mqtt_uri;
+    if (!strcmp(key,"mqtt_user")) return v->mqtt_user;
+    if (!strcmp(key,"cloud_url")) return SETUP_CLOUD_URL;
+    if (!strcmp(key,"status_id")) return v->status_id;
+    if (!strcmp(key,"status_endpoint")) return v->status_endpoint;
+    if (!strcmp(key,"status_endpoint_label")) return v->saved_relay ? "Relay" : v->saved_mqtt ? "Broker" : "Server";
+    if (!strcmp(key,"status_transport")) return v->saved_relay ? "Relay" : v->saved_cloud ? "Cloud" : v->saved_mqtt ? "MQTT broker" : "Local REST";
+    if (!strcmp(key,"id")) return v->id;
+    if (!strcmp(key,"cloud_id")) return v->cloud_id;
+    if (!strcmp(key,"error")) return v->error;
+    if (!strcmp(key,"networks")) return v->networks;
+    if (!strcmp(key,"nonce")) return s_nonce;
+    if (!strcmp(key,"version")) return FW_VERSION;
+    if (!strcmp(key,"wave_native")) return v->display_mode == DISPLAY_NATIVE ? "checked" : "";
+    if (!strcmp(key,"wave_5s")) return v->display_mode == DISPLAY_FAST_5S ? "checked" : "";
+    if (!strcmp(key,"wave_10s")) return v->display_mode == DISPLAY_FAST_10S ? "checked" : "";
+    return NULL;
 }
-
-// Initial banner for re-entry portals ("server unreachable" etc.); shown on
-// every GET until a save. Always one of our own constant strings — safe HTML.
-static const char *s_initial_note = NULL;
-
-static esp_err_t h_root(httpd_req_t *req)
-{
-    return render_form(req, s_initial_note);
+static bool view_send(const char *data,size_t n,void *context) {
+    if (!n) return true;
+    return httpd_resp_send_chunk(((view_t *)context)->req,data,n)==ESP_OK;
 }
-
-// Parse the submitted form, validate, and persist via config_store. REST-default:
-// transport is REST unless explicitly MQTT, so a normal save always stores
-// server_url and feeds the validated REST client. Pairing state is NOT cleared —
-// a server change self-heals via the 401->wipe in rest_handler.
-static esp_err_t h_save(httpd_req_t *req)
-{
-    // static: keeps 3 KB off the httpd task stack; safe because ESP-IDF httpd runs
-    // all handlers on one task. 3072 covers the worst-case fully percent-encoded
-    // form (~1.9 KB incl. the MQTT fields, which still submit while JS-hidden).
-    static char body[3072];
-    int total = 0;
-    // A body that wouldn't fit would parse as silently truncated fields (e.g. a
-    // chopped server_url persisted without error) — reject it outright instead.
-    if (req->content_len >= sizeof(body)) {
-        // Drain and discard so the leftover bytes aren't misparsed as a next
-        // request on this connection, then re-render the form with the error.
-        char sink[256];
-        int left = (int)req->content_len;
-        while (left > 0) {
-            int n = httpd_req_recv(req, sink, left < (int)sizeof(sink) ? left : (int)sizeof(sink));
-            if (n <= 0) break;
-            left -= n;
-        }
-        return render_form(req, "Submission too large. Please shorten the longest fields and try again.");
+static esp_err_t form(httpd_req_t *req,const char *error,const setup_request_t *submitted) {
+    view_t *v=calloc(1,sizeof(*v));
+    if (!v) return httpd_resp_send_err(req,HTTPD_500_INTERNAL_SERVER_ERROR,"Not enough memory. Retry setup.");
+    v->req=req;
+    v->display_mode=(display_mode_t)config_get_waveform(DEFAULT_WAVEFORM);
+    char saved_id[64], endpoint[160];
+    v->saved_mqtt=config_active_profile()==CONFIG_PROFILE_MQTT;
+    v->saved_relay=config_relay_configured();
+    config_get_server_url(endpoint,sizeof endpoint);
+    v->saved_cloud=config_active_profile()==CONFIG_PROFILE_CLOUD;
+    if(v->saved_mqtt) {
+        config_profile_view_t mqtt; config_get_profile(CONFIG_PROFILE_MQTT,&mqtt);
+        strlcpy(endpoint,mqtt.server,sizeof endpoint);
     }
-    while (total < (int)sizeof(body) - 1) {
-        int n = httpd_req_recv(req, body + total, sizeof(body) - 1 - total);
-        if (n <= 0) break;
-        total += n;
-    }
-    if (total != (int)req->content_len)
-        return render_form(req, "Submission interrupted. Please try again.");
-    body[total] = '\0';
-
-    char ssid[33] = {0}, pass[65] = {0}, transport[8] = {0}, waveform[8] = {0};
-    char mqtt_uri[160] = {0}, mqtt_user[64] = {0}, mqtt_pass[64] = {0};
-    char server_url[192] = {0}, pairing_code[16] = {0}, device_id[33] = {0};
-    char relay_url[192] = {0}, relay_code[40] = {0};
-
-    struct { const char *key; char *out; size_t cap; } fields[] = {
-        {"ssid", ssid, sizeof ssid}, {"pass", pass, sizeof pass},
-        {"transport", transport, sizeof transport}, {"waveform", waveform, sizeof waveform},
-        {"mqtt_uri", mqtt_uri, sizeof mqtt_uri}, {"mqtt_user", mqtt_user, sizeof mqtt_user},
-        {"mqtt_pass", mqtt_pass, sizeof mqtt_pass}, {"server_url", server_url, sizeof server_url},
-        {"pairing_code", pairing_code, sizeof pairing_code}, {"device_id", device_id, sizeof device_id},
-        {"relay_url", relay_url, sizeof relay_url}, {"relay_code", relay_code, sizeof relay_code},
-    };
-    for (size_t i = 0; i < sizeof fields / sizeof fields[0]; i++) {
-        if (provform_parse_field(body, fields[i].key, fields[i].out, fields[i].cap)
-                == PROVFORM_FIELD_INVALID)
-            return render_form(req, "A field is too long or has invalid encoding. Please check your entries.");
-    }
-    bool have_ssid = ssid[0], have_pass = pass[0], have_uri = mqtt_uri[0];
-    bool have_mpw = mqtt_pass[0], have_devid = device_id[0];
-
-    // Cloud relay is its own transport; otherwise REST unless explicitly MQTT, so
-    // a malformed/absent field still lands on the recommended transport.
-    bool use_relay = (strcmp(transport, "relay") == 0);
-    bool use_rest  = !use_relay && (strcmp(transport, "mqtt") != 0);
-    uint8_t mode = use_rest ? 1 : 0;
-
-    // Refresh waveform is orthogonal to transport; an absent/unknown value keeps
-    // the recommended default. Applied unconditionally below (every save).
-    uint8_t wave = (strcmp(waveform, "5s") == 0)     ? EPD_WAVE_5S :
-                   (strcmp(waveform, "native") == 0) ? EPD_WAVE_NATIVE :
-                   (strcmp(waveform, "10s") == 0)    ? EPD_WAVE_10S : DEFAULT_WAVEFORM;
-
-    if (!have_ssid) return render_form(req, "WiFi network name (SSID) is required.");
-    if (!wifi_credentials_valid(ssid, pass))
-        return render_form(req, "WiFi needs an SSID up to 32 bytes and a password of 8 to 63 bytes, or a 64 digit hexadecimal key. Leave the password blank for an open network.");
-    // Device id is optional (blank = auto-derive from MAC), but if given it must
-    // match what the server accepts, else discovery would silently 400-loop.
-    if (have_devid && !provform_device_id_valid(device_id))
-        return render_form(req,
-            "Device id must be lowercase, start with a letter, and use only "
-            "letters, digits, - or _ (2-32 chars).");
-    if (use_relay) {
-        // A relay panel needs no server URL; it needs a relay URL + pairing code.
-        // A blank relay URL uses the hosted default (matches the field's hint), so
-        // the user only has to type a pairing code for the common case.
-        if (!relay_url[0]) strlcpy(relay_url, RELAY_DEFAULT_URL, sizeof relay_url);
-        provform_url_result_t r = provform_normalize_server_url(relay_url, sizeof relay_url);
-        if (r == PROVFORM_URL_BADSCHEME)
-            return render_form(req, "Relay URL must start with http:// or https://.");
-        if (!relay_code[0])
-            return render_form(req, "A pairing code is required for cloud relay.");
-    } else if (use_rest) {
-        provform_url_result_t r = provform_normalize_server_url(server_url, sizeof server_url);
-        if (r == PROVFORM_URL_EMPTY)
-            return render_form(req, "Server URL is required when transport is REST.");
-        if (r == PROVFORM_URL_BADSCHEME)
-            return render_form(req, "Server URL must start with http:// or https://.");
-    } else if (!have_uri) {
-        return render_form(req, "MQTT broker URI is required when transport is MQTT.");
-    }
-
-    ESP_LOGI(TAG, "saving ssid='%s' transport=%s (req='%s') dest='%s' device_id='%s' waveform=%s",
-             ssid, use_relay ? "relay" : use_rest ? "rest" : "mqtt",
-             transport[0] ? transport : "rest",
-             use_relay ? relay_url : use_rest ? server_url : "(mqtt)",
-             have_devid ? device_id : "(auto)",
-             wave == EPD_WAVE_5S ? "5s" : wave == EPD_WAVE_NATIVE ? "native" : "10s");
-
-    config_set_wifi(ssid, have_pass ? pass : NULL);
-    config_set_waveform(wave);                         // refresh speed (all transports)
-    // Device id is shared across transports. Blank = leave as-is (auto-derive
-    // from MAC at pair time, or keep the server's canonical id once paired).
-    if (have_devid) config_set_device_id(device_id);
-    if (use_relay) {
-        // Entering a pairing code is an explicit "pair with this code" action, so
-        // clear any existing pairing (frame key / ids / etags) first. Without this
-        // a stale frame key keeps relay_ready() true, relay_pairing_pending() false,
-        // and the new code is ignored — the device would keep polling the old
-        // (possibly revoked) mailbox. Clearing forces a fresh pair on the next wake.
-        config_clear_relay();
-        // Relay wins at runtime (main.c gates on config_relay_configured()), so
-        // the MQTT/REST transport int is left as-is.
-        config_set_relay_url(relay_url);
-        config_set_relay_code(relay_code);
+    if (v->saved_relay) {
+        config_get_relay_url(endpoint,sizeof endpoint);
+        config_get_relay_device(saved_id,sizeof saved_id);
+        if (!saved_id[0]) strcpy(saved_id,"Assigned after pairing");
     } else {
-        // A non-relay save clears relay state so switching transports is
-        // predictable (a stale relay pairing would otherwise keep winning).
-        config_clear_relay();
-        config_set_transport(mode);
-        if (use_rest) {
-            config_set_server_url(server_url);
-            config_set_pairing_code(pairing_code);
-        } else {
-            mqtt_normalize_uri(mqtt_uri, sizeof mqtt_uri);   // "host:1883" -> "mqtt://host:1883"
-            config_set_mqtt(mqtt_uri, mqtt_user, have_mpw ? mqtt_pass : NULL);
+        config_get_device_id(saved_id,sizeof saved_id);
+        if (!saved_id[0]) {
+            uint8_t mac[6];
+            if (esp_read_mac(mac,ESP_MAC_WIFI_STA)==ESP_OK)
+                snprintf(saved_id,sizeof saved_id,"picpak-%02x%02x%02x",mac[3],mac[4],mac[5]);
+            else strcpy(saved_id,"Not assigned");
         }
     }
-    config_set_paired_pending(true);   // one-shot: forces a fresh repaint next boot
-
-    httpd_resp_set_type(req, "text/html; charset=utf-8");
-    httpd_resp_send(req, k_thanks_html, HTTPD_RESP_USE_STRLEN);
-    xEventGroupSetBits(s_done, BIT_CREDS_SAVED);
+    provform_html_escape(saved_id,v->status_id,sizeof v->status_id);
+    provform_html_escape(endpoint[0] ? endpoint : "Not configured",v->status_endpoint,sizeof v->status_endpoint);
+    config_profile_view_t local, cloud, relay, mqtt;
+    config_get_profile(CONFIG_PROFILE_MQTT, &mqtt);
+    config_get_profile(CONFIG_PROFILE_LOCAL, &local);
+    config_get_profile(CONFIG_PROFILE_CLOUD, &cloud);
+    config_get_profile(CONFIG_PROFILE_RELAY, &relay);
+    setup_request_t fields={0};
+    config_get_wifi(fields.ssid,sizeof fields.ssid,fields.pass,sizeof fields.pass);
+    fields.relay = v->saved_relay;
+    fields.cloud = v->saved_cloud;
+    fields.mqtt = v->saved_mqtt;
+    if (submitted) {
+        fields = *submitted;
+        if (fields.relay) strlcpy(relay.server, fields.relay_url, sizeof relay.server);
+        else if (fields.cloud) strlcpy(cloud.id, fields.id, sizeof cloud.id);
+        else if(fields.mqtt) {
+            strlcpy(mqtt.server,fields.mqtt_uri,sizeof mqtt.server);
+            strlcpy(mqtt.id,fields.id,sizeof mqtt.id);
+            strlcpy(mqtt.user,fields.mqtt_user,sizeof mqtt.user);
+        } else {
+            strlcpy(local.server, fields.server, sizeof local.server);
+            strlcpy(local.id, fields.id, sizeof local.id);
+        }
+    }
+    if (!provform_device_id_valid(local.id)) local.id[0]=0;
+    if (!provform_device_id_valid(cloud.id)) cloud.id[0]=0;
+    v->relay = fields.relay;
+    v->cloud = fields.cloud;
+    v->mqtt = fields.mqtt;
+    provform_html_escape(mqtt.id,v->mqtt_id,sizeof v->mqtt_id);
+    provform_html_escape(mqtt.server,v->mqtt_uri,sizeof v->mqtt_uri);
+    provform_html_escape(mqtt.user,v->mqtt_user,sizeof v->mqtt_user);
+    provform_html_escape(relay.server,v->relay_url,sizeof v->relay_url);
+    if (fields.has_display_mode) v->display_mode=fields.display_mode;
+    provform_html_escape(fields.ssid,v->ssid,sizeof v->ssid);
+    provform_html_escape(local.server,v->server,sizeof v->server);
+    provform_html_escape(local.id,v->id,sizeof v->id);
+    provform_html_escape(cloud.id,v->cloud_id,sizeof v->cloud_id);
+    provform_html_escape(error ? error : "",v->error,sizeof v->error);
+    memset(&fields,0,sizeof fields);
+    size_t used=0;
+    for (unsigned i=0;i<s_scan_count;i++) {
+        char escaped[200]; provform_html_escape(s_scan[i].ssid,escaped,sizeof escaped);
+        int n=snprintf(v->networks+used,sizeof v->networks-used,
+            "<option value=\"%s\">%s (%d dBm)</option>",
+            escaped,escaped,s_scan[i].rssi);
+        if (n<0 || (size_t)n>=sizeof v->networks-used) { v->networks[used]=0; break; }
+        used+=(size_t)n;
+    }
+    httpd_resp_set_type(req,"text/html; charset=utf-8");
+    httpd_resp_set_hdr(req,"Cache-Control","no-store");
+    httpd_resp_set_hdr(req,"X-Content-Type-Options","nosniff");
+    bool ok=portal_render(k_portal_html,view_value,view_send,v);
+    free(v);
+    return ok ? httpd_resp_send_chunk(req,NULL,0) : ESP_FAIL;
+}
+static const char *s_initial_note;
+static esp_err_t h_root(httpd_req_t *req) { return form(req,s_initial_note,NULL); }
+static esp_err_t h_save(httpd_req_t *req) {
+    static char body[3072];
+    if (!req->content_len || req->content_len >= sizeof body) {
+        httpd_resp_send_err(req,HTTPD_400_BAD_REQUEST,"Form too large. Reload setup.");
+        return ESP_FAIL;
+    }
+    size_t used=0;
+    while(used<req->content_len) {
+        int n=httpd_req_recv(req,body+used,req->content_len-used);
+        if(n<=0) { memset(body,0,sizeof body); return ESP_FAIL; }
+        used+=(size_t)n;
+    }
+    body[used]=0;
+    char old_ssid[33],old_pass[65],transport[16];
+    config_get_wifi(old_ssid,sizeof old_ssid,old_pass,sizeof old_pass);
+    provform_parse_field(body,"transport",transport,sizeof transport);
+    config_profile_t selected=!strcmp(transport,"cloud") ? CONFIG_PROFILE_CLOUD :
+        !strcmp(transport,"relay") ? CONFIG_PROFILE_RELAY :
+        !strcmp(transport,"mqtt") ? CONFIG_PROFILE_MQTT : CONFIG_PROFILE_LOCAL;
+    config_profile_view_t profile;
+    config_get_profile(selected,&profile);
+    setup_request_t fields;
+    const char *error=setup_request_parse(body,s_nonce,old_ssid,old_pass,profile.id,&fields);
+    memset(old_pass,0,sizeof old_pass); memset(body,0,sizeof body);
+    if(!error && fields.cloud)
+        error=setup_request_check_cloud_pairing(&fields,profile.server,profile.id,profile.paired);
+    if(!error && fields.relay && !fields.relay_code[0] &&
+        ((!profile.paired && !profile.pending) || strcmp(profile.server,fields.relay_url)))
+        error="Enter a new Relay pairing code from your server.";
+    if(!error) {
+        const char *server=fields.relay ? fields.relay_url : fields.mqtt ? fields.mqtt_uri : fields.server;
+        const char *code=fields.relay ? fields.relay_code : fields.pair;
+        esp_err_t err=config_save_connection(selected,server,fields.id,code,fields.mqtt_user,fields.mqtt_pass);
+        if(err==ESP_OK) err=config_save_wifi(fields.ssid,fields.pass);
+        if(err==ESP_OK && fields.has_display_mode) err=config_save_waveform(fields.display_mode);
+        if(err!=ESP_OK) error="Settings could not be fully saved. Please try again.";
+    }
+    if(error) {
+        httpd_resp_set_status(req,"400 Bad Request");
+        esp_err_t result=form(req,error,&fields);
+        memset(&fields,0,sizeof fields); return result;
+    }
+    memset(&fields,0,sizeof fields);
+    config_set_paired_pending(true);
+    httpd_resp_set_type(req,"text/html; charset=utf-8");
+    httpd_resp_sendstr(req,"<!doctype html><html lang=en><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Settings saved</title><style>body{font:17px/1.5 system-ui;background:#f1f0ec;color:#18181b;padding:40px 20px}main{max-width:420px;margin:auto;background:white;padding:28px;border-radius:12px}h1{color:#0d8c7e;font-size:26px}</style><main><h1>Settings saved</h1><p>Your PicPak is restarting and checking its connection.</p><p>Return to your home Wi-Fi and open Tesserae. Register Local REST or MQTT devices in Settings &rarr; Devices if needed. Cloud claims the panel automatically. Relay pairing completes when your server is online.</p><p>If setup reopens, reconnect to the setup network for details.</p></main></html>");
+    xEventGroupSetBits(s_done,BIT_CREDS_SAVED);
     return ESP_OK;
 }
 
@@ -844,6 +581,8 @@ static void start_http(void)
 
 esp_err_t provisioning_run_blocking(const char *note)
 {
+    uint8_t nonce[16]; esp_fill_random(nonce,sizeof nonce);
+    for(unsigned i=0;i<sizeof nonce;i++) snprintf(s_nonce+i*2,3,"%02x",nonce[i]);
     s_initial_note = note;
     s_done = xEventGroupCreate();
 

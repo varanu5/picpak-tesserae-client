@@ -9,6 +9,9 @@ idf_component_register(
          "epd_driver.c"
          "fb2bpp.c"
          "config_store.c"
+         "config_profiles.c"
+         "setup_request.c"
+         "portal_view.c"
          "power.c"
          "wake_align.c"
          "led.c"
@@ -32,8 +35,9 @@ idf_component_register(
          "relay_wire.c"
          "relay.c"
          "vendor/monocypher.c"
+         "vendor/tls_bundle.c"
     INCLUDE_DIRS "." "vendor"
     EMBED_FILES "assets/splash_setup.bin" "assets/splash_paired.bin" "assets/splash_lowbatt.bin"
-                "assets/splash_revoked.bin"
+                "assets/splash_revoked.bin" "assets/splash_register.bin"
     REQUIRES bt mbedtls esp_timer driver nvs_flash esp_wifi esp_netif esp_http_client esp_http_server
              json esp_adc lwip esp_hw_support mqtt)

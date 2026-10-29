@@ -45,8 +45,10 @@ static const char *TAG = "picpak";
 RTC_NOINIT_ATTR static uint32_t s_button_event_seq;
 RTC_DATA_ATTR static connection_retry_t s_connection_retry;
 RTC_DATA_ATTR static bool s_lowbatt_splash_painted;
+RTC_DATA_ATTR static bool s_unpaired_splash_painted;
 
 static void show_lowbatt_if_needed(bool newly_locked) {
+    s_unpaired_splash_painted = false;
     if (newly_locked) s_lowbatt_splash_painted = false;
     if (s_lowbatt_splash_painted || power_battery_mv() < LOWBATT_MIN_PLAUSIBLE_MV) return;
     s_lowbatt_splash_painted = splash_show_lowbatt() == ESP_OK;
@@ -108,6 +110,7 @@ void app_main(void) {
             power_deep_sleep(lowbatt_wake_s());
         }
         s_lowbatt_splash_painted = false;
+        s_unpaired_splash_painted = false;
         ble_setup_run(BLE_MAINTENANCE_TIMEOUT_S);
         // Start the normal network cycle with clean Wi-Fi/BLE task ownership.
         // Clear Wi-Fi requests persist a one-shot BLE recovery flag; timeout
@@ -144,8 +147,10 @@ void app_main(void) {
             maintenance_screen_photo_ready(framebuf());
             if (config_set_lowbatt_screen(true) != ESP_OK || epd_present(framebuf()) != ESP_OK)
                 ESP_LOGW(TAG, "ready screen pending, retry on a later wake");
-            else
+            else {
+                s_unpaired_splash_painted = false;
                 config_set_lowbatt_screen(false);
+            }
         }
         if (act.run_photo) ble_photo_run(90);
         // Diagnostic summary, printed after the session so it survives the USB-Serial-JTAG
@@ -173,6 +178,7 @@ void app_main(void) {
         power_deep_sleep(lowbatt_wake_s());            // no return
     }
     if (want_provision) {
+        s_unpaired_splash_painted = false;
         config_clear_frame_ref();
         splash_show_setup();                           // panel shows AP name/password while you provision
         if (provisioning_run_blocking(NULL) == ESP_OK) {
@@ -220,29 +226,27 @@ void app_main(void) {
     s_lowbatt_splash_painted = false;
     if (was_locked || config_lowbatt_screen_pending()) config_clear_frame_ref();
 
-    // One-shot after provisioning: paint the "waiting for first frame" splash and
-    // clear the frame ref so the first poll repaints the real photo over the splash.
-    // Clearing all transports matters on MQTT: a re-provision can leave a retained
-    // frame URL identical to the stored one, so a REST-only clear left the paired
-    // splash stranded. Deliberately after the power-fault and low-battery gates:
-    // the 13-22 s EPD refresh is the heaviest rail load we have, and taking the
-    // flag earlier would consume it just before a brownout could kill the paint —
-    // gated here, the splash intent survives to the next healthy boot.
+    // Check setup before choosing registration or connected guidance.
     bool just_provisioned = config_take_paired_pending();
     if (just_provisioned) {
         config_clear_frame_ref();
-        splash_show_paired();
-        ESP_LOGI(TAG, "paired_pend: painted paired splash + cleared frame ref");
+        s_unpaired_splash_painted = false;
     }
 
     // Transport dispatch: 0 = MQTT, 1 = REST (default; matches the portal's
     // REST-recommended default). Both loops are network-I/O-only — a new frame
     // is buffered, not painted.
     uint8_t transport = config_get_transport(1);
-    // Cloud relay is a mutually-exclusive third transport: when configured it
-    // wins and the REST/MQTT dispatch below is skipped entirely (same "one
-    // transport" rule as the reference — a relay panel has no home server).
+    // Transport selection survives pairing removal.
     bool use_relay = config_relay_configured();
+    if (config_relay_revoked()) {
+        if (!s_unpaired_splash_painted) {
+            config_clear_frame_ref();
+            s_unpaired_splash_painted = splash_show_revoked() == ESP_OK;
+        }
+        power_deep_sleep(86400);
+    }
+    bool was_unpaired = config_rest_unpaired();
     int next = (int)config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S);
     bool wifi_ok = false;
     bool transport_ok = false;
@@ -324,17 +328,14 @@ void app_main(void) {
     }
     wifi_stop();
 
-    // A revoked pairing is terminal (two consecutive 401 wakes; server/relay
-    // v0.240.0+). Drop it (keeping the relay URL), show setup so a fresh code
-    // re-pairs, and sleep. Re-pair is a physical action anyway, so we don't
-    // auto-open AP mode here — the setup splash tells the user what to do.
-    if (use_relay && relay_pairing_revoked()) {
-        ESP_LOGW(TAG, "relay pairing revoked (2 wakes of 401); forgetting + re-pair splash");
-        relay_forget_revoked_pairing();
-        splash_show_revoked();   // "Unpaired — hold button 20s" (not the AP-join setup splash)
-        power_deep_sleep((uint32_t)next);   // no return
+    if (use_relay && relay_pairing_revoked()) relay_forget_revoked_pairing();
+    if (config_relay_revoked() || config_rest_unpaired()) {
+        if (!s_unpaired_splash_painted) {
+            config_clear_frame_ref();
+            s_unpaired_splash_painted = splash_show_revoked() == ESP_OK;
+        }
+        power_deep_sleep(86400);
     }
-
     // The setup flag was consumed before connecting. Later outages only retry.
     if (setup_should_reopen(just_provisioned, wifi_ok, transport_ok)) {
         const char *note;
@@ -375,10 +376,22 @@ void app_main(void) {
     const uint8_t *fb = use_relay        ? relay_pending_frame()
                       : (transport == 0) ? mqtt_pending_frame()
                                          : rest_pending_frame();
+    bool paired = use_relay ? relay_ready() : transport == CONFIG_PROFILE_MQTT ? fb != NULL : false;
+    if (!use_relay && transport != CONFIG_PROFILE_MQTT) {
+        char token[80]; config_get_device_token(token, sizeof token);
+        paired = token[0] != 0;
+    }
+    bool setup_result = just_provisioned || was_unpaired || s_unpaired_splash_painted;
+    if (wifi_ok && transport_ok &&
+        ((setup_result && paired) || (!fb && (setup_result || (!paired && reason != ESP_RST_DEEPSLEEP))))) {
+        esp_err_t shown = (paired || use_relay) ? splash_show_paired() : splash_show_registration();
+        if (shown == ESP_OK) s_unpaired_splash_painted = false;
+    }
     if (fb) {
         ESP_LOGI(TAG, "painting new frame (radio off)");
         esp_err_t err = epd_present(fb);
         if (err == ESP_OK) {
+            s_unpaired_splash_painted = false;
             config_set_lowbatt_screen(false);
             // Commit only after refresh and panel shutdown have both succeeded.
             if (use_relay)           relay_frame_painted();

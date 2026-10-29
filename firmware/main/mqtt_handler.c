@@ -20,7 +20,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_mac.h"
-#include "esp_crt_bundle.h"
+#include "tls_bundle.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/portmacro.h"
@@ -171,7 +171,7 @@ int mqtt_run_loop(esp_reset_reason_t reset_reason) {
     // CA / PSK case, out of scope). Attach ONLY on the secure schemes: setting it on a
     // plain mqtt:// / ws:// URI can mis-configure the client.
     if (strncmp(uri, "mqtts://", 8) == 0 || strncmp(uri, "wss://", 6) == 0)
-        cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+        cfg.broker.verification.crt_bundle_attach = tls_bundle_attach;
 
     esp_mqtt_client_handle_t cli = esp_mqtt_client_init(&cfg);
     if (!cli) { vEventGroupDelete(s_events); s_events = NULL; return fallback; }

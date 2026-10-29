@@ -1,4 +1,4 @@
-// rest_handler.c — Tesserae REST transport (one wake cycle).
+// rest_handler.c — REST transport (one wake cycle).
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 varanu5 <https://github.com/varanu5>
 #include "rest_handler.h"
@@ -18,7 +18,7 @@
 #include <stdlib.h>    // atoi
 #include <time.h>
 #include "esp_http_client.h"
-#include "esp_crt_bundle.h"
+#include "tls_bundle.h"
 #include "esp_mac.h"
 #include "esp_log.h"
 #include "cJSON.h"
@@ -103,7 +103,9 @@ static bool http_origin(const char *url, char *out, size_t cap) {
 static esp_err_t http_ev(esp_http_client_event_t *e) {
     resp_t *r = (resp_t *)e->user_data;
     if (!r) return ESP_OK;
-    if (e->event_id == HTTP_EVENT_ON_HEADER) {
+    if (e->event_id == HTTP_EVENT_ON_CONNECTED && !strncmp(s_http_origin, "https://", 8)) {
+        ESP_LOGI(TAG, "TLS certificate verified: %s", s_http_origin);
+    } else if (e->event_id == HTTP_EVENT_ON_HEADER) {
         r->headers_seen = true;
         if (strcasecmp(e->header_key, "ETag") == 0)
             strlcpy(r->etag, e->header_value, sizeof(r->etag));
@@ -159,7 +161,7 @@ static int http_do(esp_http_client_method_t method, const char *url,
                 .url = url, .timeout_ms = timeout, .event_handler = http_ev,
                 .user_data = resp, .disable_auto_redirect = true,
             };
-            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+            if (strncmp(url, "https://", 8) == 0) cfg.crt_bundle_attach = tls_bundle_attach;
             s_http = esp_http_client_init(&cfg);
             if (!s_http) return -1;
             strlcpy(s_http_origin, origin, sizeof(s_http_origin));
@@ -248,10 +250,7 @@ static int http_frame(const char *url) {
     return r.len;
 }
 
-// Resolve a (possibly relative) frame URL against the server origin — the
-// /frame endpoint may return a path-only url (ported from the reference's
-// resolve_url; our server returns absolute URLs today, but a proxy or a server
-// change must not turn into a silent every-wake fetch failure).
+// Resolve relative frame URLs against the server origin.
 static void resolve_url(const char *server, const char *u, char *out, size_t cap) {
     if (strncmp(u, "http://", 7) == 0 || strncmp(u, "https://", 8) == 0) {
         snprintf(out, cap, "%s", u);
@@ -346,23 +345,39 @@ static int ensure_paired(const char *server) {
         return REST_DISCOVER_RETRY_S;
     }
 
-    cJSON *j = cJSON_Parse(rbuf);
+    if (r.overflow) return REST_DISCOVER_RETRY_S;
+    cJSON *j = cJSON_ParseWithOpts(rbuf, NULL, true);
+    if (!cJSON_IsObject(j)) { cJSON_Delete(j); j = NULL; }
     if (!j) { ESP_LOGE(TAG, "pair response not JSON"); return REST_DISCOVER_RETRY_S; }
     int retry = REST_DISCOVER_RETRY_S;
     cJSON *tok = cJSON_GetObjectItemCaseSensitive(j, "device_token");
     cJSON *id  = cJSON_GetObjectItemCaseSensitive(j, "device_id");
     cJSON *registered = cJSON_GetObjectItemCaseSensitive(j, "registered");
-    if (!r.overflow && (cJSON_IsFalse(registered) ||
-        (cJSON_IsString(tok) && tok->valuestring[0]))) s_connection_ok = true;
-    if (cJSON_IsString(tok) && tok->valuestring[0]) {
-        config_set_device_token(tok->valuestring);
+    if (!cJSON_IsFalse(registered) && cJSON_IsString(tok) && tok->valuestring[0]) {
         // Server's canonical device_id wins (it lowercases / may rename).
-        if (cJSON_IsString(id) && id->valuestring[0]) config_set_device_id(id->valuestring);
-        if (use_register) config_set_pairing_code("");   // single-use: burn on success
+        const char *canonical = cJSON_IsString(id) && id->valuestring[0] ? id->valuestring : dev_id;
+        esp_err_t saved = config_save_pairing(canonical, tok->valuestring, use_register);
+        if (saved != ESP_OK) {
+            ESP_LOGE(TAG, "pairing credentials not saved: %s", esp_err_to_name(saved));
+            cJSON_Delete(j);
+            return REST_DISCOVER_RETRY_S;
+        }
+        s_connection_ok = true;
         apply_config_sleep(cJSON_GetObjectItemCaseSensitive(j, "config"));
         ESP_LOGI(TAG, "paired: device_id=%s", cJSON_IsString(id) ? id->valuestring : dev_id);
         retry = 0;
     } else {
+        if (!use_register && cJSON_IsFalse(registered) &&
+            (!tok || cJSON_IsNull(tok) || (cJSON_IsString(tok) && !tok->valuestring[0]))) {
+            s_connection_ok = true;
+            esp_err_t saved = config_note_rest_unregistered();
+            if (saved != ESP_OK) ESP_LOGW(TAG, "unpaired state not saved: %s", esp_err_to_name(saved));
+            if (config_rest_unpaired()) {
+                ESP_LOGW(TAG, "device is no longer registered; showing setup instructions; retry in 86400 s");
+                cJSON_Delete(j);
+                return 86400;
+            }
+        }
         cJSON *ra = cJSON_GetObjectItemCaseSensitive(j, "retry_after_s");
         if (cJSON_IsNumber(ra) && ra->valueint > 0) retry = ra->valueint;
         ESP_LOGW(TAG, "not claimed yet as '%s' — open Tesserae Settings->Devices and Register it. retry in %ds",
@@ -370,6 +385,20 @@ static int ensure_paired(const char *server) {
     }
     cJSON_Delete(j);
     return retry;
+}
+
+static bool missing_device(int status, const resp_t *response, const char *id) {
+    if (status != 404 || response->overflow || !response->body) return false;
+    char expected[96];
+    int n = snprintf(expected, sizeof(expected), "no device with id '%s'", id);
+    if (n < 0 || (size_t)n >= sizeof(expected)) return false;
+    cJSON *j = cJSON_ParseWithOpts(response->body, NULL, true);
+    const cJSON *code = cJSON_GetObjectItemCaseSensitive(j, "status");
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(j, "error");
+    bool missing = cJSON_IsNumber(code) && code->valuedouble == 404 &&
+                   cJSON_IsString(error) && !strcmp(error->valuestring, expected);
+    cJSON_Delete(j);
+    return missing;
 }
 
 static int rest_wake(esp_reset_reason_t reset_reason,
@@ -391,7 +420,7 @@ static int rest_wake(esp_reset_reason_t reset_reason,
     char url[256];
     int un = snprintf(url, sizeof(url), "%s/api/v1/device/%s/frame", server, dev_id);
     if (un > 0 && un < (int)sizeof(url) && button && button[0]) {
-        // A button wake. "refresh" (5 s hold) re-renders the current page and
+        // A button wake. "refresh" re-renders the current page and
         // drops If-None-Match so the re-render comes back as 200; navigation
         // buttons (a tap -> "right") keep the ETag so an unchanged frame still
         // 304s. The server dedups the press by button_event_id across /frame +
@@ -411,7 +440,7 @@ static int rest_wake(esp_reset_reason_t reset_reason,
     // an auth/network failure keeps /status as the fallback delivery path.
     bool frame_acked = (st == 200 || st == 304 || st == 204);
 
-    if (st == 200) {
+    if (st == 200 && !fr.overflow) {
         cJSON *j = cJSON_Parse(fbuf);
         cJSON *urlj = j ? cJSON_GetObjectItemCaseSensitive(j, "url") : NULL;
         if (cJSON_IsString(urlj) && urlj->valuestring[0]) {
@@ -420,11 +449,10 @@ static int rest_wake(esp_reset_reason_t reset_reason,
             resolve_url(server, urlj->valuestring, fullurl, sizeof(fullurl));
             int n = http_frame(fullurl);
             if (n == EPD_FB_BYTES) {
-                // Not painted here: main paints after wifi_stop() so the radio
-                // never idles through (or brown-outs) the 13-22 s EPD refresh.
+                // Main owns the display and persists the ETag after a successful refresh.
                 s_frame_pending = true;
                 strlcpy(s_pending_etag, fr.etag, sizeof(s_pending_etag));
-                ESP_LOGI(TAG, "new frame buffered; painting after radio-off");
+                ESP_LOGI(TAG, "new frame buffered");
             } else {
                 ESP_LOGE(TAG, "frame size %d != %d; refusing to paint", n, EPD_FB_BYTES);
             }
@@ -438,9 +466,8 @@ static int rest_wake(esp_reset_reason_t reset_reason,
     } else if (st == 204) {
         s_connection_ok = true;
         ESP_LOGI(TAG, "no frame rendered yet (204)");
-    } else if (st == 401 || st == 403) {
-        // 403 too: the server 403s a token bound to a renamed/re-canonicalized
-        // device id (reference behaviour) — without the wipe we'd retry forever.
+    } else if (st == 401 || st == 403 || missing_device(st, &fr, dev_id)) {
+        // Clear rejected credentials so the next wake can pair again.
         // Keep automatic token renewal outside the initial setup check.
         s_connection_ok = true;
         ESP_LOGW(TAG, "%d; wiping token to re-pair next wake", st);
@@ -479,12 +506,15 @@ static int rest_wake(esp_reset_reason_t reset_reason,
             cJSON *clock = cJSON_GetObjectItemCaseSensitive(j, "server_time");
             if (cJSON_IsNumber(clock)) wake_align_sync(wake_align_epoch(clock->valuedouble));
             cJSON *wake = cJSON_GetObjectItemCaseSensitive(j, "wake_at");
-            wake_align_set_target(cJSON_IsNumber(wake) ? wake_align_epoch(wake->valuedouble) : 0);
+            uint32_t target = cJSON_IsNumber(wake) ? wake_align_epoch(wake->valuedouble) : 0;
+            wake_align_set_target(target);
+            ESP_LOGI(TAG, "schedule: interval=%lu s; next=%lu s; wake_at=%lu",
+                     (unsigned long)config_get_sleep_s(SLEEP_INTERVAL_DEFAULT_S),
+                     (unsigned long)next, (unsigned long)target);
         }
         cJSON_Delete(j);
-    } else if (sst == 401 || sst == 403) {
-        // Same healing as the /frame 401/403: a token revoked between the two
-        // calls would otherwise take an extra full sleep cycle to re-pair.
+    } else if (sst == 401 || sst == 403 || missing_device(sst, &sr, dev_id)) {
+        // Rediscover rejected credentials or a missing device on the next wake.
         s_connection_ok = true;
         ESP_LOGW(TAG, "status %d; wiping token to re-pair next wake", sst);
         config_set_device_token("");
@@ -514,5 +544,5 @@ bool rest_connection_ok(void) { return s_connection_ok; }
 
 void rest_frame_painted(void) {
     s_frame_pending = false;
-    if (s_pending_etag[0]) config_set_etag(s_pending_etag);
+    config_set_etag(s_pending_etag);
 }

@@ -7,7 +7,7 @@ server on a phone setup screen, and it fetches a new picture on its own schedule
 
 **Under the hood:** it's battery-powered firmware for the frame's **ESP32-C3**. Most of the time the
 device is in deep sleep; on each scheduled wake it connects to WiFi, pulls the current frame from
-Tesserae (over REST, MQTT, or cloud relay), reports a heartbeat (battery and RSSI), turns off WiFi,
+Tesserae (over Local REST, Cloud, Relay, or MQTT), reports a heartbeat (battery and RSSI), turns off WiFi,
 paints any new frame, and goes back to sleep. An optional Manual (Bluetooth) mode receives
 photos locally from a compatible Tesserae Companion app without a server.
 
@@ -16,17 +16,19 @@ Modelled on Tesserae's battery-native reference client
 but retargeted to the PicPak's hardware: a smaller 4-colour panel, an ESP32-C3 (RISC-V) instead of an
 S3, no PMIC (battery is read straight off an ADC), and a 2-bits-per-pixel frame format.
 
-> **Status:** REST, MQTT, and cloud relay work on real hardware. `FW_VERSION 0.9.13`.
+> **Firmware version:** `0.9.15` adds independent connections, Tesserae Cloud,
+> updated setup screens and cross-signed TLS verification. Host checks and build pass;
+> initial hardware testing was reported successful.
 > See [`CHANGELOG.md`](CHANGELOG.md) for release notes.
 > Tested on PicPak **hardware revision v0.0.1**, migrating from **official firmware v1.1.11**
 > to this firmware and back (stock restore verified).
 
 ## What you need before you start
 
-- For automatic updates, a **Tesserae server** already running on your network.
-  Set one up first: [Tesserae](https://github.com/dmellok/tesserae).
-  (Or, for a frame in another location, a **cloud relay**; see
-  [Cloud relay](#cloud-relay-remote-panels).)
+- For automatic updates, a **Tesserae server** or **Tesserae Cloud** account.
+  For a local server, start with [Tesserae](https://github.com/dmellok/tesserae).
+  To reach your self-hosted server from another location, see
+  [Cloud relay](#cloud-relay-remote-panels).
 - A **computer** (macOS, Windows, or Linux) to do the flashing, and **several hours** for the
   one-time verified backup (two unattended reads, roughly 1.5 to 2 hours each on the tested unit).
 - A **USB-C data cable**. Many cables are charge-only and won't work; if the computer never sees the
@@ -329,7 +331,7 @@ password manually. If the setup page does not open, visit `http://192.168.4.1`
 after joining. The QR contains only the setup network details.
 
 The AP is **`Tesserae-Setup-XXXX`** (password `tesserae`, IP `192.168.4.1`); a DNS-hijack pops the captive
-sheet on your phone. Fill in:
+sheet on your phone. Choose a [transport mode](#transport-modes). For Local REST, fill in:
 
 - **WiFi** network + password. A blank password keeps the saved password only when the
   network name is unchanged. For a different open network, leave the password blank.
@@ -339,16 +341,18 @@ sheet on your phone. Fill in:
   that hostname works, and the server does not need to be publicly reachable. The certificate
   must chain to the firmware's trusted CA bundle, such as Let's Encrypt. Self-signed
   certificates are not supported.
-- **Device id** *(optional)*: a custom name (`picpak-1`, validated `^[a-z][a-z0-9_-]{1,31}$`); blank
+- **Device id** *(optional)*: a custom name (`kitchen`, no required prefix, validated `^[a-z][a-z0-9_-]{1,31}$`); blank
   auto-derives `picpak-<mac>`. This is the id the device claims and shows in Tesserae.
 - **Pairing code** *(optional)*: a 6-digit code from Tesserae's **Pair new device** to self-claim
   without an admin click; blank uses the discovery flow (admin clicks **Register**).
 
 Save, and the frame reboots and checks its connection once. If WiFi fails, or the selected
 Tesserae server, MQTT broker or cloud relay connection cannot be confirmed, the setup screen
-and portal reopen with a message explaining what to check. A waiting splash can appear while
-the connection attempt runs. A device waiting to be claimed, relay pairing still pending,
-or a connection with no image yet does not count as a failure. REST token renewal
+and portal reopen with a message explaining what to check. After the connection attempt,
+an unclaimed Local REST device shows **Register device** with **Settings > Devices**
+instructions; a confirmed pairing shows **Connected** while waiting for its first picture.
+A device waiting to be claimed, relay pairing still pending, or a connection with no image
+yet does not count as a failure. REST token renewal
 continues on the next wake without reopening setup. Cloud relay keeps its existing
 revocation check across two wakes.
 
@@ -422,16 +426,28 @@ that data irrecoverably unless you have your full stock backup.
 
 ### Transport modes
 
-All three transports work; pick one in the captive portal (stored in NVS, switchable any time by
-re-provisioning). In **REST** and **MQTT** the frame **bytes** are fetched over HTTP(S) from a URL
-and the transport only carries the signalling and telemetry; the **cloud relay** instead carries the
-(encrypted) frame itself through its mailbox; see [Cloud relay](#cloud-relay-remote-panels).
+Choose **Local REST**, **Cloud**, **Relay**, or **MQTT broker** in setup. Each connection
+retains its own endpoint, identity, credentials and server sleep interval. Wi-Fi and
+refresh speed are shared. Switching connections refreshes the displayed image reference.
 
-| Mode | Status |
+| Connection | Pairing and settings |
 | --- | --- |
-| `1` REST (default, recommended) | **working**: device polls the Tesserae REST API each wake; no broker needed |
-| `0` MQTT | **working**: device reads a retained frame topic from an MQTT broker each wake; needs a broker (e.g. Mosquitto) reachable by both the server and the frame |
-| Cloud relay | **working**: for a panel that can't reach your Tesserae server directly (another home, CGNAT, a hotspot). Mutually exclusive with REST/MQTT: when a relay is paired the device talks only to the relay. See below. |
+| Local REST | Your server URL and optional Device ID; optional six-digit pairing code, or register through Settings > Devices |
+| Cloud | Fixed `https://cloud.tesserae.ink` endpoint; its own optional Device ID and eight-digit claim code, with spaces accepted |
+| Relay | Its own HTTPS endpoint and server-generated pairing code; identity comes from the server |
+| MQTT broker | Its own broker URI, Device ID, username and password; uses retained topics, without a pairing-code exchange |
+
+A blank code keeps a matching existing pairing, including after switching back from
+another connection. A new code or changed endpoint/ID resets only that connection.
+Device IDs do not require a `picpak-` prefix: use 2–32 lowercase letters, digits, hyphens
+or underscores, starting with a letter. A new blank ID gets the MAC-based fallback.
+The setup header shows saved device ID, connection, endpoint, firmware and setup AP IP.
+
+Confirmed removal from Local REST, Cloud or Relay shows the same Unpaired instructions
+and sleeps for 24 hours. Relay stays selected instead of falling back to REST or MQTT.
+REST/Cloud first attempt token and identity recovery; only a valid discovery response
+confirming unregistration marks removal. MQTT has no server-removal signal: missing
+retained messages and broker failures do not establish that a device is unpaired.
 
 The initial sleep interval is **15 minutes**. Tesserae can change it after connection,
 with supported relative intervals from 30 seconds to 7 days. This schedule is separate from
@@ -458,11 +474,10 @@ never exposed to the internet. The relay is **zero-knowledge**: at pairing the t
 X25519 **public** keys through it and each derive the same AES-256-GCM frame key locally (the key is
 never transmitted). Frame content is encrypted, while the relay still sees routing information
 and request timing. A frame with a failed authentication tag is never painted. Frame crypto is in `firmware/main/relay_crypto.c` (X25519
-via vendored Monocypher, HKDF-SHA256 + AES-GCM via mbedTLS), covered by the relay contract's golden
-vectors in `firmware/test/test_relay_crypto.c`.
+via vendored Monocypher, HKDF-SHA256 + AES-GCM via mbedTLS).
 
-**Provisioning:** in the setup portal pick **Cloud relay**, enter the relay URL (defaults to the
-hosted `https://relay.tesserae.ink`) and a single-use pairing code from your Tesserae server
+**Provisioning:** in the setup portal pick **Relay**, enter the HTTPS relay URL (for example,
+`https://relay.tesserae.ink`) and a single-use pairing code from your Tesserae server
 (*Settings → Cloud relay → Add a remote panel*). No server URL is needed. Pairing may take a couple of
 wakes to complete. While pending, the frame checks once per wake using its saved sleep interval
 (15 minutes if unset). A quick button wake checks sooner. After pairing, each wake fetches the
@@ -484,7 +499,7 @@ downloaded remains available for painting if later polls fail or the window expi
 after the window ends. WiFi then turns off before painting. On an older server the button
 fields are ignored (harmless). MQTT does not dispatch button actions. *(A revoked panel also
 auto-recovers on v0.240.0+: two consecutive `401` wakes → the panel drops its pairing, paints an
-**"Unpaired"** screen, and re-pairs on a fresh code via the 20 s-hold portal, URL pre-filled.)*
+**"Unpaired"** screen, stays in Relay mode with daily sleep, and re-pairs on a fresh code via the 20 s-hold portal, URL pre-filled.)*
 
 Relay requests reuse one connection during the wake, including button polling, when
 the relay permits it. A stale connection can retry a GET once. Status and pairing
@@ -516,7 +531,7 @@ precedes the paint by the selected refresh duration):
   "battery_pct": 96,
   "rssi": -63,
   "ip": "10.0.20.40",
-  "fw_version": "0.9.13",
+  "fw_version": "0.9.15",
   "kind": "picpak_client",
   "panel_w": 400,
   "panel_h": 300,
@@ -644,14 +659,15 @@ and [manual photo operation](docs/ble-photo.md) for session limits and app compa
 
 ### Panel screens
 
-Four splash backgrounds are embedded as 2 bpp assets generated by `tools/gen_splash.py`.
+Five splash backgrounds are embedded as 2 bpp assets generated by `tools/gen_splash.py`.
 The setup screen adds its device-specific SSID and WiFi QR at runtime on a white background.
 The QR is not a separate prebuilt binary.
 
 - **Setup**: WiFi join QR + `Tesserae-Setup-XXXX` / `tesserae`, shown when the portal comes up so you can join.
-- **Paired**: "Connected, waiting for first frame", shown once after you submit, until the first photo.
-- **Battery low**: "please charge", shown by the low-battery gate.
-- **Unpaired**: shown when a relay panel's pairing is revoked (see [Cloud relay](#cloud-relay-remote-panels)), until you re-pair with a fresh code.
+- **Register device**: directs an unclaimed Local REST device to **Settings > Devices** in Tesserae; also used for MQTT setup without a frame.
+- **Connected**: "Waiting for your first picture", shown after a confirmed connection or pending Relay pairing.
+- **Battery low**: battery icon and "Please connect a charger", shown by the low-battery gate.
+- **Unpaired**: shared guidance after confirmed removal from Local REST, Cloud or Relay; hold the front button for 20 seconds to reopen setup.
 
 ### Power notes
 
@@ -672,8 +688,8 @@ The QR is not a separate prebuilt binary.
 - **Battery reading** uses a batch of ADC samples early in the wake, before WiFi or the panel
   loads the supply. Its median is cached for telemetry. The percentage is an estimate from
   voltage, not a fuel-gauge measurement.
-- **Radio off during the panel refresh.** All network I/O (frame fetch and status, on all three
-  transports) finishes first, then WiFi stops, then the panel paints, so the radio never idles
+- **Radio off during the panel refresh.** All network I/O (frame fetch and status, on all four
+  connection modes) finishes first, then WiFi stops, then the panel paints, so the radio never idles
   throughout the selected refresh or overlaps its load with the panel. In MQTT mode the broker
   session closes gracefully first, so normal shutdown does not trigger its last-will.
 - **Lazy panel init.** The EPD is powered and initialized only when a new frame actually arrived;
@@ -693,47 +709,9 @@ The QR is not a separate prebuilt binary.
   optimization (`-O2`) while keeping the CPU at 80 MHz.
 - **WiFi fast-connect.** After the first association the AP's BSSID + primary channel are cached in
   NVS and reused on the next wake, so the radio skips the ~1 to 2 s all-channel scan (less radio-on
-  time, a smaller brownout-sag window across all three transports). A stale hint (AP moved channel / router
+  time, a smaller brownout-sag window across all four connection modes). A stale hint (AP moved channel / router
   swapped) fails fast and falls back to a full scan, which re-caches the real AP: one slower wake,
   then fast again.
-
-## Project layout
-
-```
-picpak-tesserae-client/
-├── firmware/                     # ESP-IDF app for the ESP32-C3
-│   ├── CMakeLists.txt · partitions.csv · sdkconfig.defaults
-│   └── main/
-│       ├── main.c                # wake loop: boot → gesture/provision → gates → wifi → fetch → heartbeat → radio off → paint → sleep
-│       ├── board.h · defaults.h  # pin map + compile-time tunables
-│       ├── epd_driver.{c,h} · epd_init_seq.h   # 400×300 BWRY UC81xx panel driver + init sequence
-│       ├── fb2bpp.{c,h}          # 2 bpp framebuffer packer (+ host test)
-│       ├── framebuf.{c,h}        # 30 KB frame staging buffer shared by all transports
-│       ├── power.{c,h}           # battery ADC, deep sleep, boot-button gesture
-│       ├── wake_align.{c,h}      # REST absolute wake targets and RTC drift correction
-│       ├── battpct.h             # pure mV→% Li-Po curve (host-tested)
-│       ├── lowbatt.{c,h} · lowbatt_core.h      # low-battery gate (pure FSM + RTC glue)
-│       ├── led.{c,h}             # status LED (GPIO21) blink / hold-progression feedback
-│       ├── config_store.{c,h}    # NVS config (creds, token, etag, broker, sleep)
-│       ├── wifi_manager.{c,h}    # STA connect, fast reconnect and clock sync
-│       ├── provisioning.{c,h} · provision_form.{c,h}   # SoftAP captive portal + pure form parser
-│       ├── splash.{c,h} · assets/splash_*.bin  # embedded setup / paired / low-batt / revoked screens
-│       ├── setup_identity.{c,h} · setup_screen.{c,h} · setup_font.h  # setup SSID, QR and text
-│       ├── ble_setup.{c,h} · maintenance_screen.{c,h}  # Bluetooth maintenance
-│       ├── ble_photo.{c,h}       # local photo sessions
-│       ├── image_fetcher.{c,h}   # MQTT image download over HTTP(S)
-│       ├── rest_handler.{c,h} · rest_button.h  # REST: discover/register + frame GET + status POST (+ button/deck dispatch)
-│       ├── mqtt_handler.{c,h}    # MQTT: retained frame/config read + heartbeat publish, one session
-│       ├── mqtt_parse.{c,h}      # pure payload/URI helpers (+ host test)
-│       ├── relay.{c,h} · relay_crypto.{c,h} · relay_wire.{c,h}   # cloud-relay transport (X25519 + AES-GCM remote panels)
-│       ├── vendor/              # crypto, QR generator and font with their notices
-│       └── heartbeat.{c,h}       # battery / RSSI / IP / panel JSON
-├── docs/                         # Bluetooth operation and protocol details
-├── tools/                        # release packaging, asset generation and host checks
-├── CHANGELOG.md
-├── README.md
-└── LICENSE                       # AGPL-3.0
-```
 
 ## Disclaimer
 
