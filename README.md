@@ -1,17 +1,33 @@
-# picpak-tesserae-client
+<h1 align="center">PicPak × Tesserae</h1>
 
 <p align="center">
-  <img src="screenshots/picpak.jpeg" alt="PicPak running the firmware and displaying a weather screen" width="500">
+  Your photos and widgets on a four-colour e-paper frame.<br>
+  Open-source firmware powered by Tesserae.
 </p>
 
-*PicPak in action, displaying weather on its four-colour e-paper screen.*
+<p align="center">
+  <a href="#what-you-need-before-you-start">Get started</a> ·
+  <a href="#installing-the-firmware">Installation</a> ·
+  <a href="CHANGELOG.md">Release notes</a>
+</p>
+
+<p align="center">
+  <img src="screenshots/picpak.jpeg" alt="PicPak running the firmware and displaying a weather screen" width="500"><br>
+  <em>PicPak in action, displaying weather on its four-colour e-paper screen.</em>
+</p>
+
+<h3 align="center">Deep-sleep power consumption</h3>
 
 <p align="center">
   <img src="screenshots/deep_sleep.png" alt="PicPak deep-sleep current measurement over 1 second" width="800">
 </p>
 
-*Device power consumption during deep sleep: the capture shows an average current of
-**39.18 µA** and a peak of **40.65 µA**.*
+<p align="center">
+  <strong>39.18 µA average</strong> &nbsp;·&nbsp; <strong>40.65 µA peak</strong><br>
+  <em>Device current during deep sleep, measured over the 1-second window shown above.</em>
+</p>
+
+---
 
 **In plain terms:** this replaces the stock firmware on the PicPak photo frame so it shows photos
 from *your own* self-hosted [Tesserae](https://github.com/dmellok/tesserae) server instead of the
