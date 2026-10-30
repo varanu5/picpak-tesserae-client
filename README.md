@@ -24,7 +24,9 @@
 
 <p align="center">
   <strong>39.18 µA average</strong> &nbsp;·&nbsp; <strong>40.65 µA peak</strong><br>
-  <em>Device current during deep sleep, measured over the 1-second window shown above.</em>
+  <em>Device current during deep sleep only, measured over the 1-second window shown above.<br>
+  These readings exclude e-ink refreshes, LED blinking, and operation with the Wi-Fi radio on.<br>
+  Further measurements under different operating conditions will be published in the documentation.</em>
 </p>
 
 ---
