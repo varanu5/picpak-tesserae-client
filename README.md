@@ -1,5 +1,14 @@
 # picpak-tesserae-client
 
+<img src="screenshots/picpak.jpeg" alt="PicPak running the firmware and displaying a weather screen" width="500">
+
+*PicPak in action, displaying weather on its four-colour e-paper screen.*
+
+<img src="screenshots/deep_sleep.png" alt="PicPak deep-sleep current measurement over 10 seconds" width="800">
+
+*Device power consumption during deep sleep: the capture shows an average current of
+**45.58 µA** and a peak of **47.61 µA**.*
+
 **In plain terms:** this replaces the stock firmware on the PicPak photo frame so it shows photos
 from *your own* self-hosted [Tesserae](https://github.com/dmellok/tesserae) server instead of the
 vendor's cloud, with no vendor account and no subscription. You flash it once, tell the frame your WiFi and
